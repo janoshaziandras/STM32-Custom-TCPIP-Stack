@@ -61,4 +61,9 @@
         *  **RxBuffLen**: Specifies the length of the receiving buffer.
       * **HAL_ETH_MspInit**: Specifies the GPIO pin outlet, configures the clocks and the NVIC for callbacks interuption.
       * **HAL_ETH_Start_IT(heth)**: This function starts the MAC and DMA transmission and reception. When the DMA copied the frame into the memory, it will call the HAL_ETH_RxCpltCallback(ETH_HandleTypeDef *heth) function.
-      * 
+        
+### 2026.02.12
+* The ETH config is set up correctly as per the HAL driver manual. Although it's not working yet, I'm trying to make sense of it using debug mode.
+* I found the probable cause all descriptor values are zero. <img width="911" height="663" alt="image" src="https://github.com/user-attachments/assets/3ae08dc1-b57f-4342-b8d3-226a92c7ebed" />
+*Since i don't see any other option in the hal driver i will try to fill up the registers myself, if i understand it well i have to fill up the desc0 with the destination address, and flip the own bit to 1.
+* I created a buffer and manually set the first descriptor's desc0 field with the destination address. I flipped the desc3 OWN bit to 1, but it still isn't working.
