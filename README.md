@@ -43,7 +43,7 @@
 
 ### 2026.02.10
 * **Implementation**: Started implementing `HAL_ETH_RxCpltCallback()`, which is called whenever the ETH DMA finishes copying.
-* **DMA**: Using the pre-defined DMA controller in MX with the `HAL_DMA_Start()` function.
+* **DMA**: Using the pre-defined DMA controller in MX with the `HAL_UART_Transmit_DMA(&huart3, source , Length)` function.
 * **Deep Dive**: Studying the Ethernet Descriptor structure (Reference Manual p. 2909).
 *  I am learning about memory management and trying to understand how .ld files and their pregenerated content work.
 *  I made an ETH memory section in the linker script, for now 64kb should be sufficient. Created necessary section for the ETH HAL driver and contained necessary tags:  `.RxDescripSection` and `.TxDescripSection`
@@ -52,10 +52,13 @@
 * **Status**: USART is tested and functional. I will continue working on the basics ETH configuration.
 * **Understanding the ETH data structures**:
     * Re-reading the DMA driver description and trying to understand the pregenerated content fully, sometimes i am peeking into the HAL driver code. I am learning so much about the C language during it.
-    * **ETH_HandleTypeDef analysis**: This contains everything, including the discriptor lists: `TxDescList`, `RxDescList`, and core functions and data structures: `HAL_ETH_Init`, `Start`, `Transmit`, `ReadData`, `GetState`.
-      * **heth.Instance = ETH**: The *Instance field is required to be set to the base ETH register address. I checked the ETH base address definition in the HAL driver: `#define ETH ((ETH_TypeDef *)ETH_BASE)`. `ETH_TypeDef` contains the registers cast to the base address.
+    * **ETH_HandleTypeDef analysis**: This contains everything, including the discriptor lists: `TxDescList`, `RxDescList`, and core functions and data structures: `HAL_ETH_Init`, `Start`, `Transmit`,            `ReadData`, `GetState`.
+      * **heth.Instance = ETH**: The *Instance field is required to be set to the base ETH register address. I checked the ETH base address definition in the HAL driver: `#define ETH ((ETH_TypeDef*)ETH_BASE)`. `ETH_TypeDef` contains the registers cast to the base address.
       * **heth.Init**: This field contains a `ETH_InitTypeDef` struct. This structure contains the initial configuration:
         * ***MACAddr**: The pointer to the MAC address, must be an array of 6 bytes
         * **MediaInterface**: Selects the interface. This board has two options: MII or RMII
         *  ***TxDesc** **and** ***RxDesc**: Points to the address of the first discriptor
         *  **RxBuffLen**: Specifies the length of the receiving buffer.
+      * **HAL_ETH_MspInit**: Specifies the GPIO pin outlet, configures the clocks and the NVIC for callbacks interuption.
+      * **HAL_ETH_Start_IT(heth)**: This function starts the MAC and DMA transmission and reception. When the DMA copied the frame into the memory, it will call the HAL_ETH_RxCpltCallback(ETH_HandleTypeDef *heth) function.
+      * 
