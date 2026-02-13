@@ -69,4 +69,4 @@
 * I created a buffer and manually set the first descriptor's desc0 field with the destination address. I flipped the desc3 OWN bit to 1, but it still isn't working.
 * I ran the HAL_ETH_GetError(&heth) and the HAL_ETH_GetDMAError(&heth) to get more information, i am researching about the received erorros:  0x8, 0x1002
 ### 2026.02.13
-*Finally found the error the descriptor addresses were not aligned correctly to 32-byte, and the hardware tried to read 32-byte pieces.<img width="696" height="595" alt="image" src="https://github.com/user-attachments/assets/aacd04c6-9f97-454b-95f2-187e694145e4" />
+*Finally found the error the descriptor addresses were to small (24byte), and the hardware tried to read 32-byte pieces.<img width="696" height="595" alt="image" src="https://github.com/user-attachments/assets/aacd04c6-9f97-454b-95f2-187e694145e4" />
