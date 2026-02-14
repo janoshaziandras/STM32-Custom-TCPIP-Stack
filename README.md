@@ -65,15 +65,20 @@
 ### 2026.02.12
 * The ETH config is set up correctly as per the HAL driver manual. Although it's not working yet, I'm trying to make sense of it using debug mode.
 * I found the probable cause all descriptor values are zero.
+* 
 * <img width="911" height="663" alt="image" src="https://github.com/user-attachments/assets/3ae08dc1-b57f-4342-b8d3-226a92c7ebed" />
+
 * Since i don't see any other option in the hal driver i will try to fill up the descriptors myself, if i understand it well i have to fill up the desc0 with the destination address, and flip the own bit to 1.
 * I created a buffer and manually set the first descriptor's desc0 field with the destination address. I flipped the desc3 OWN bit to 1, but it still isn't working.
 * I ran the HAL_ETH_GetError(&heth) and the HAL_ETH_GetDMAError(&heth) to get more information, i am researching about the received erorros:  0x8, 0x1002
 ### 2026.02.13
 *Finally found the error the descriptor addresses were to small (24byte), and the hardware tried to read 32-byte pieces.
+
 *<img width="696" height="595" alt="image" src="https://github.com/user-attachments/assets/aacd04c6-9f97-454b-95f2-187e694145e4" />
+
 *I am sure there is a fancier solution for this, but i just added a 2-bytes padding to the ETH_DMADescTypeDef structure maybe i will come across with some better sulution later
 *Finnaly the ETH is working fine i am able to recive frames and send log informations throught usart
 *I had to implement a temporary filter to my own pc mac address for testing because my ONT device spamming huge ammount of broadcast message (multiple/sec)
+
 *<img width="1137" height="497" alt="image" src="https://github.com/user-attachments/assets/67988fb7-1182-44c4-a085-ccbb05586319" />
 
