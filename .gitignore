@@ -8,6 +8,7 @@ Release/
 *.map
 *.hex
 *.bin
+*.launch
 .settings/
 .cache/
 

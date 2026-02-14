@@ -19,6 +19,7 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "string.h"
+#include <stdio.h>
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -41,22 +42,21 @@
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
-#if defined ( __ICCARM__ ) /*!< IAR Compiler */
-#pragma location=0x30000000
-ETH_DMADescTypeDef  DMARxDscrTab[ETH_RX_DESC_CNT]; /* Ethernet Rx DMA Descriptors */
-#pragma location=0x30000080
-ETH_DMADescTypeDef  DMATxDscrTab[ETH_TX_DESC_CNT]; /* Ethernet Tx DMA Descriptors */
 
-#elif defined ( __CC_ARM )  /* MDK ARM Compiler */
 
-__attribute__((at(0x30000000))) ETH_DMADescTypeDef  DMARxDscrTab[ETH_RX_DESC_CNT]; /* Ethernet Rx DMA Descriptors */
-__attribute__((at(0x30000080))) ETH_DMADescTypeDef  DMATxDscrTab[ETH_TX_DESC_CNT]; /* Ethernet Tx DMA Descriptors */
+typedef union {
+  ETH_DMADescTypeDef desc;
+  uint32_t padding[2];
+} ETH_DMA_PaddedDescriptorTypeDef;
 
-#elif defined ( __GNUC__ ) /* GNU Compiler */
 
-ETH_DMADescTypeDef DMARxDscrTab[ETH_RX_DESC_CNT] __attribute__((section(".RxDescripSection"))); /* Ethernet Rx DMA Descriptors */
-ETH_DMADescTypeDef DMATxDscrTab[ETH_TX_DESC_CNT] __attribute__((section(".TxDescripSection")));   /* Ethernet Tx DMA Descriptors */
-#endif
+ETH_DMA_PaddedDescriptorTypeDef DMARxDscrTab[ETH_RX_DESC_CNT] __attribute__((section(".RxDescripSection"))) __attribute__((aligned(32)));
+ETH_DMA_PaddedDescriptorTypeDef DMATxDscrTab[ETH_TX_DESC_CNT] __attribute__((section(".TxDescripSection"))) __attribute__((aligned(32)));
+
+uint8_t RXbuffer[ETH_RX_DESC_CNT][1536] __attribute__((aligned(32))) __attribute__((section(".RxDescripSection")));
+uint8_t TXbuffer[ETH_RX_DESC_CNT][1536] __attribute__((aligned(32))) __attribute__((section(".TxDescripSection")));
+
+
 
 ETH_TxPacketConfig TxConfig;
 
@@ -94,6 +94,7 @@ int main(void)
 
   /* USER CODE BEGIN 1 */
 
+
   /* USER CODE END 1 */
 
   /* MPU Configuration--------------------------------------------------------*/
@@ -129,13 +130,65 @@ int main(void)
   MX_ETH_Init();
   MX_USART3_UART_Init();
   /* USER CODE BEGIN 2 */
+  memset(DMARxDscrTab, 0, sizeof(DMARxDscrTab));
 
+
+
+
+  char *msg1 = "UART OK\r\n";
+  HAL_UART_Transmit(&huart3, (uint8_t*)msg1, 9, 100);
+
+  for(int i = 0; i < ETH_RX_DESC_CNT; i++)
+  {
+      DMARxDscrTab[i].desc.DESC0 = (uint32_t)&RXbuffer[i][0];
+      DMARxDscrTab[i].desc.DESC1 = 0;
+
+      if (i < ETH_RX_DESC_CNT - 1)
+          DMARxDscrTab[i].desc.DESC2 = (uint32_t)&DMARxDscrTab[i+1].desc;
+      else
+          DMARxDscrTab[i].desc.DESC2 = (uint32_t)&DMARxDscrTab[0].desc;
+
+      DMARxDscrTab[i].desc.DESC3 = 0xC1000000;
+  }
+
+  if (HAL_ETH_Start_IT(&heth) != HAL_OK)
+  {
+      char *msg = "ETH ERROR\r\n";
+      HAL_UART_Transmit(&huart3, (uint8_t*)msg, 13, 100);
+  }
+  else
+  {
+	  char *msg = "ETH STARTED\r\n";
+	    HAL_UART_Transmit(&huart3, (uint8_t*)msg, 29, 100);
+  }
+
+
+  ETH_MACFilterConfigTypeDef FilterConf;
+  FilterConf.PromiscuousMode = 0;
+  FilterConf.BroadcastFilter = 0;
+  FilterConf.PassAllMulticast = 1;
+  HAL_ETH_SetMACFilterConfig(&heth, &FilterConf);
+
+
+
+  uint32_t errorCode = HAL_ETH_GetError(&heth);
+  uint32_t dmaError = HAL_ETH_GetDMAError(&heth);
+
+
+  char debugMsg[64];
+  sprintf(debugMsg, "Status -> Err: 0x%lx, DMA: 0x%lx\r\n", errorCode, dmaError);
+  HAL_UART_Transmit(&huart3, (uint8_t*)debugMsg, strlen(debugMsg), 100);
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
+
+
+
+
+
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -218,6 +271,9 @@ static void MX_ETH_Init(void)
 
   /* USER CODE BEGIN ETH_Init 1 */
 
+
+
+
   /* USER CODE END ETH_Init 1 */
   heth.Instance = ETH;
   MACAddr[0] = 0x00;
@@ -231,6 +287,7 @@ static void MX_ETH_Init(void)
   heth.Init.TxDesc = DMATxDscrTab;
   heth.Init.RxDesc = DMARxDscrTab;
   heth.Init.RxBuffLen = 1536;
+
 
   /* USER CODE BEGIN MACADDRESS */
 
@@ -338,12 +395,61 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
+void HAL_ETH_RxCpltCallback(ETH_HandleTypeDef *heth)
+{
+	static uint32_t counter = 0;
+    for(int i = 0; i < ETH_RX_DESC_CNT; i++)
+    {
+
+        if((DMARxDscrTab[i].desc.DESC3 & 0x80000000) == 0)
+        {
+
+            if(RXbuffer[i][6]  == 0xE8 && RXbuffer[i][7]  == 0x9C &&
+               RXbuffer[i][8]  == 0x25 && RXbuffer[i][9]  == 0xDD &&
+               RXbuffer[i][10] == 0xBF && RXbuffer[i][11] == 0x66)
+            {
+            	counter++;
+                uint32_t pktLen = DMARxDscrTab[i].desc.DESC3 & 0x3FFF;
+
+
+                char header[64];
+                int len = sprintf(header, "\r\n(%lu counter)  Packet Size: (%lu bytes)\r\n", counter, pktLen);
+                HAL_UART_Transmit(&huart3, (uint8_t*)header, len, 100);
+
+
+                HAL_UART_Transmit(&huart3, (uint8_t*)"Dest: ", 6, 100);
+                for(uint32_t j = 0; j < 6; j++)
+                {
+                    char hex[4];
+                    sprintf(hex, "%02X ", RXbuffer[i][j]);
+                    HAL_UART_Transmit(&huart3, (uint8_t*)hex, 3, 100);
+                }
+
+
+                HAL_UART_Transmit(&huart3, (uint8_t*)"\r\nSrc:  ", 8, 100);
+                for(uint32_t j = 6; j < 12; j++)
+                {
+                    char hex[4];
+                    sprintf(hex, "%02X ", RXbuffer[i][j]);
+                    HAL_UART_Transmit(&huart3, (uint8_t*)hex, 3, 100);
+                }
+                HAL_UART_Transmit(&huart3, (uint8_t*)"\r\n", 2, 100);
+            }
+
+
+            DMARxDscrTab[i].desc.DESC3 = 0xC1000000;
+            heth->Instance->DMACRDTPR = (uint32_t)&DMARxDscrTab[ETH_RX_DESC_CNT - 1];
+        }
+    }
+}
+
+
 
 /* USER CODE END 4 */
 
  /* MPU Configuration */
 
-void MPU_Config(void)
+ void MPU_Config(void)
 {
   MPU_Region_InitTypeDef MPU_InitStruct = {0};
 
