@@ -62,10 +62,9 @@
       * **HAL_ETH_MspInit**: Specifies the GPIO pin outlet, configures the clocks and the NVIC for callbacks interuption.
       * **HAL_ETH_Start_IT(heth)**: This function starts the MAC and DMA transmission and reception. When the DMA copied the frame into the memory, it will call the HAL_ETH_RxCpltCallback(ETH_HandleTypeDef *heth) function.
         
-### 2026.02.12
+### 2026.02.12/13
 * The ETH config is set up correctly as per the HAL driver manual. Although it's not working yet, I'm trying to make sense of it using debug mode.
 * I found the probable cause all descriptor values are zero.
-* 
 * <img width="911" height="663" alt="image" src="https://github.com/user-attachments/assets/3ae08dc1-b57f-4342-b8d3-226a92c7ebed" />
 
 * Since i don't see any other option in the hal driver i will try to fill up the descriptors myself, if i understand it well i have to fill up the desc0 with the destination address, and flip the own bit to 1.
@@ -81,4 +80,6 @@
 *I had to implement a temporary filter to my own pc mac address for testing because my ONT device spamming huge ammount of broadcast message (multiple/sec)
 
 *<img width="1137" height="497" alt="image" src="https://github.com/user-attachments/assets/67988fb7-1182-44c4-a085-ccbb05586319" />
-
+### 2026.02.15
+* Today I started working on the ARP protocol. I read the documentation for ARP (RFC 826).
+* I started working on the header structures, trying to create something that won't cause regrets or headaches in the future. I think I'll create a typedef struct for the Ethernet frame and I will declare it as a field in every upper-layer header.
