@@ -19,11 +19,10 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "string.h"
-#include <stdio.h>
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "headers.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -42,21 +41,22 @@
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
+#if defined ( __ICCARM__ ) /*!< IAR Compiler */
+#pragma location=0x30000000
+ETH_DMADescTypeDef  DMARxDscrTab[ETH_RX_DESC_CNT]; /* Ethernet Rx DMA Descriptors */
+#pragma location=0x30000080
+ETH_DMADescTypeDef  DMATxDscrTab[ETH_TX_DESC_CNT]; /* Ethernet Tx DMA Descriptors */
 
+#elif defined ( __CC_ARM )  /* MDK ARM Compiler */
 
-typedef union {
-  ETH_DMADescTypeDef desc;
-  uint32_t padding[2];
-} ETH_DMA_PaddedDescriptorTypeDef;
+__attribute__((at(0x30000000))) ETH_DMADescTypeDef  DMARxDscrTab[ETH_RX_DESC_CNT]; /* Ethernet Rx DMA Descriptors */
+__attribute__((at(0x30000080))) ETH_DMADescTypeDef  DMATxDscrTab[ETH_TX_DESC_CNT]; /* Ethernet Tx DMA Descriptors */
 
+#elif defined ( __GNUC__ ) /* GNU Compiler */
 
-ETH_DMA_PaddedDescriptorTypeDef DMARxDscrTab[ETH_RX_DESC_CNT] __attribute__((section(".RxDescripSection"))) __attribute__((aligned(32)));
-ETH_DMA_PaddedDescriptorTypeDef DMATxDscrTab[ETH_TX_DESC_CNT] __attribute__((section(".TxDescripSection"))) __attribute__((aligned(32)));
-
-uint8_t RXbuffer[ETH_RX_DESC_CNT][1536] __attribute__((aligned(32))) __attribute__((section(".RxDescripSection")));
-uint8_t TXbuffer[ETH_RX_DESC_CNT][1536] __attribute__((aligned(32))) __attribute__((section(".TxDescripSection")));
-
-
+ETH_DMADescTypeDef DMARxDscrTab[ETH_RX_DESC_CNT] __attribute__((section(".RxDescripSection"))); /* Ethernet Rx DMA Descriptors */
+ETH_DMADescTypeDef DMATxDscrTab[ETH_TX_DESC_CNT] __attribute__((section(".TxDescripSection")));   /* Ethernet Tx DMA Descriptors */
+#endif
 
 ETH_TxPacketConfig TxConfig;
 
@@ -66,7 +66,9 @@ UART_HandleTypeDef huart3;
 DMA_HandleTypeDef hdma_usart3_tx;
 
 /* USER CODE BEGIN PV */
-
+uint8_t RXbuffer[ETH_RX_DESC_CNT][1536] __attribute__((aligned(32))) __attribute__((section(".RxBufferSection")));
+uint8_t TXbuffer[ETH_TX_DESC_CNT][1536] __attribute__((aligned(32))) __attribute__((section(".TxBufferSection")));
+tempips tempss;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -93,8 +95,10 @@ int main(void)
 {
 
   /* USER CODE BEGIN 1 */
+	tempss = (tempips){
+	    .IPv4_add = { .addr = {192, 168, 1, 4} },
 
-
+	};
   /* USER CODE END 1 */
 
   /* MPU Configuration--------------------------------------------------------*/
@@ -132,23 +136,23 @@ int main(void)
   /* USER CODE BEGIN 2 */
   memset(DMARxDscrTab, 0, sizeof(DMARxDscrTab));
 
-
-
-
   char *msg1 = "UART OK\r\n";
   HAL_UART_Transmit(&huart3, (uint8_t*)msg1, 9, 100);
 
   for(int i = 0; i < ETH_RX_DESC_CNT; i++)
   {
-      DMARxDscrTab[i].desc.DESC0 = (uint32_t)&RXbuffer[i][0];
-      DMARxDscrTab[i].desc.DESC1 = 0;
+      DMARxDscrTab[i].DESC0 = (uint32_t)&RXbuffer[i][0];
+      DMARxDscrTab[i].DESC1 = 0;
+      DMARxDscrTab[i].DESC2 = 0;
+      DMARxDscrTab[i].DESC3 = 0xC1000000;
+  }
 
-      if (i < ETH_RX_DESC_CNT - 1)
-          DMARxDscrTab[i].desc.DESC2 = (uint32_t)&DMARxDscrTab[i+1].desc;
-      else
-          DMARxDscrTab[i].desc.DESC2 = (uint32_t)&DMARxDscrTab[0].desc;
-
-      DMARxDscrTab[i].desc.DESC3 = 0xC1000000;
+  for(int i =0; i < ETH_TX_DESC_CNT; i++)
+  {
+      DMATxDscrTab[i].DESC0 = 0;
+      DMATxDscrTab[i].DESC1 = 0;
+      DMATxDscrTab[i].DESC2 = 0;
+      DMATxDscrTab[i].DESC3 = 0;
   }
 
   if (HAL_ETH_Start_IT(&heth) != HAL_OK)
@@ -158,10 +162,9 @@ int main(void)
   }
   else
   {
-	  char *msg = "ETH STARTED\r\n";
-	    HAL_UART_Transmit(&huart3, (uint8_t*)msg, 29, 100);
+      char *msg = "ETH STARTED\r\n";
+      HAL_UART_Transmit(&huart3, (uint8_t*)msg, 29, 100);
   }
-
 
   ETH_MACFilterConfigTypeDef FilterConf;
   FilterConf.PromiscuousMode = 0;
@@ -169,11 +172,8 @@ int main(void)
   FilterConf.PassAllMulticast = 1;
   HAL_ETH_SetMACFilterConfig(&heth, &FilterConf);
 
-
-
   uint32_t errorCode = HAL_ETH_GetError(&heth);
   uint32_t dmaError = HAL_ETH_GetDMAError(&heth);
-
 
   char debugMsg[64];
   sprintf(debugMsg, "Status -> Err: 0x%lx, DMA: 0x%lx\r\n", errorCode, dmaError);
@@ -184,11 +184,6 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-
-
-
-
-
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -271,9 +266,6 @@ static void MX_ETH_Init(void)
 
   /* USER CODE BEGIN ETH_Init 1 */
 
-
-
-
   /* USER CODE END ETH_Init 1 */
   heth.Instance = ETH;
   MACAddr[0] = 0x00;
@@ -288,7 +280,6 @@ static void MX_ETH_Init(void)
   heth.Init.RxDesc = DMARxDscrTab;
   heth.Init.RxBuffLen = 1536;
 
-
   /* USER CODE BEGIN MACADDRESS */
 
   /* USER CODE END MACADDRESS */
@@ -298,12 +289,12 @@ static void MX_ETH_Init(void)
     Error_Handler();
   }
 
+  /* USER CODE BEGIN ETH_Init 2 */
+
   memset(&TxConfig, 0 , sizeof(ETH_TxPacketConfig));
   TxConfig.Attributes = ETH_TX_PACKETS_FEATURES_CSUM | ETH_TX_PACKETS_FEATURES_CRCPAD;
   TxConfig.ChecksumCtrl = ETH_CHECKSUM_IPHDR_PAYLOAD_INSERT_PHDR_CALC;
   TxConfig.CRCPadCtrl = ETH_CRC_PAD_INSERT;
-  /* USER CODE BEGIN ETH_Init 2 */
-
   /* USER CODE END ETH_Init 2 */
 
 }
@@ -388,6 +379,7 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOA_CLK_ENABLE();
   __HAL_RCC_GPIOB_CLK_ENABLE();
   __HAL_RCC_GPIOD_CLK_ENABLE();
+  __HAL_RCC_GPIOG_CLK_ENABLE();
 
   /* USER CODE BEGIN MX_GPIO_Init_2 */
 
@@ -397,59 +389,62 @@ static void MX_GPIO_Init(void)
 /* USER CODE BEGIN 4 */
 void HAL_ETH_RxCpltCallback(ETH_HandleTypeDef *heth)
 {
-	static uint32_t counter = 0;
+    arpheader *arphead;
+
     for(int i = 0; i < ETH_RX_DESC_CNT; i++)
     {
 
-        if((DMARxDscrTab[i].desc.DESC3 & 0x80000000) == 0)
+        if((DMARxDscrTab[i].DESC3 & 0x80000000) == 0)
         {
+            arphead = (arpheader *)&RXbuffer[i][0];
 
-            if(RXbuffer[i][6]  == 0xE8 && RXbuffer[i][7]  == 0x9C &&
-               RXbuffer[i][8]  == 0x25 && RXbuffer[i][9]  == 0xDD &&
-               RXbuffer[i][10] == 0xBF && RXbuffer[i][11] == 0x66)
+
+            if(arphead->frame.ETHtype == 0x0608)
             {
-            	counter++;
-                uint32_t pktLen = DMARxDscrTab[i].desc.DESC3 & 0x3FFF;
+                char msg[] = "\r\n ARP erkezett";
+                HAL_UART_Transmit(&huart3, (uint8_t*)msg, strlen(msg), 100);
+
+                arpheader *send = (arpheader *)&TXbuffer[0][0];
+                Arpreply(send, arphead->sender_mac, arphead->sender_ip);
 
 
-                char header[64];
-                int len = sprintf(header, "\r\n(%lu counter)  Packet Size: (%lu bytes)\r\n", counter, pktLen);
-                HAL_UART_Transmit(&huart3, (uint8_t*)header, len, 100);
+                static ETH_BufferTypeDef tx_buffer;
+                tx_buffer.buffer = (uint8_t *)send;
+                tx_buffer.len = 64;
+                tx_buffer.next = NULL;
+
+                TxConfig.Length = 64;
+                TxConfig.TxBuffer = &tx_buffer;
 
 
-                HAL_UART_Transmit(&huart3, (uint8_t*)"Dest: ", 6, 100);
-                for(uint32_t j = 0; j < 6; j++)
-                {
-                    char hex[4];
-                    sprintf(hex, "%02X ", RXbuffer[i][j]);
-                    HAL_UART_Transmit(&huart3, (uint8_t*)hex, 3, 100);
-                }
+                TxConfig.Attributes = ETH_TX_PACKETS_FEATURES_CRCPAD;
+                TxConfig.CRCPadCtrl = ETH_CRC_PAD_INSERT;
 
 
-                HAL_UART_Transmit(&huart3, (uint8_t*)"\r\nSrc:  ", 8, 100);
-                for(uint32_t j = 6; j < 12; j++)
-                {
-                    char hex[4];
-                    sprintf(hex, "%02X ", RXbuffer[i][j]);
-                    HAL_UART_Transmit(&huart3, (uint8_t*)hex, 3, 100);
-                }
-                HAL_UART_Transmit(&huart3, (uint8_t*)"\r\n", 2, 100);
+                SCB_CleanDCache_by_Addr((uint32_t *)send, 64);
+
+
+                HAL_StatusTypeDef tx_status = HAL_ETH_Transmit_IT(heth, &TxConfig);
+
+                char dbg[50];
+                sprintf(dbg, " - TX Status: %d\r\n", tx_status);
+                HAL_UART_Transmit(&huart3, (uint8_t*)dbg, strlen(dbg), 100);
             }
 
 
-            DMARxDscrTab[i].desc.DESC3 = 0xC1000000;
-            heth->Instance->DMACRDTPR = (uint32_t)&DMARxDscrTab[ETH_RX_DESC_CNT - 1];
+            DMARxDscrTab[i].DESC3 = 0xC1000000;
+
+            heth->Instance->DMACRDTPR = (uint32_t)&DMARxDscrTab[i];
         }
     }
 }
-
 
 
 /* USER CODE END 4 */
 
  /* MPU Configuration */
 
- void MPU_Config(void)
+void MPU_Config(void)
 {
   MPU_Region_InitTypeDef MPU_InitStruct = {0};
 
@@ -493,7 +488,7 @@ void Error_Handler(void)
 #ifdef USE_FULL_ASSERT
 /**
   * @brief  Reports the name of the source file and the source line number
-  *         where the assert_param error has occurred.
+  * where the assert_param error has occurred.
   * @param  file: pointer to the source file name
   * @param  line: assert_param error line source number
   * @retval None
