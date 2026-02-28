@@ -31,11 +31,19 @@ extern "C" {
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include <stdbool.h>
 /* USER CODE END Includes */
 
 /* Exported types ------------------------------------------------------------*/
 /* USER CODE BEGIN ET */
+extern ETH_HandleTypeDef heth;
+extern UART_HandleTypeDef huart3;
+extern ETH_TxPacketConfig TxConfig;
+extern uint8_t TXbuffer[ETH_TX_DESC_CNT][1536];
+extern ETH_DMADescTypeDef DMATxDscrTab[ETH_TX_DESC_CNT];
+extern uint8_t GetTxBuff();
+extern void Transmit(uint16_t len, uint8_t TXBuffIndex);
+
 
 /* USER CODE END ET */
 

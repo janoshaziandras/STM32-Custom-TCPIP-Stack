@@ -69,6 +69,8 @@ DMA_HandleTypeDef hdma_usart3_tx;
 uint8_t RXbuffer[ETH_RX_DESC_CNT][1536] __attribute__((aligned(32))) __attribute__((section(".RxBufferSection")));
 uint8_t TXbuffer[ETH_TX_DESC_CNT][1536] __attribute__((aligned(32))) __attribute__((section(".TxBufferSection")));
 tempips tempss;
+const MAC_Addr_t MAC_BROADCAST = {{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}};
+const MAC_Addr_t MAC_NULL = {{0x00, 0x00, 0x00, 0x00, 0x00, 0x00}};
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -175,9 +177,22 @@ int main(void)
   uint32_t errorCode = HAL_ETH_GetError(&heth);
   uint32_t dmaError = HAL_ETH_GetDMAError(&heth);
 
-  char debugMsg[64];
-  sprintf(debugMsg, "Status -> Err: 0x%lx, DMA: 0x%lx\r\n", errorCode, dmaError);
-  HAL_UART_Transmit(&huart3, (uint8_t*)debugMsg, strlen(debugMsg), 100);
+
+
+
+
+  char debugMsg3[64];
+    sprintf(debugMsg3, "Status -> Err: 0x%lx, DMA: 0x%lx\r\n", errorCode, dmaError);
+    HAL_UART_Transmit(&huart3, (uint8_t*)debugMsg3, strlen(debugMsg3), 100);
+
+
+    HAL_Delay(3000);
+
+    ipv4 target_ip = { .addr = {192, 168, 1, 61} };
+    arpreq(target_ip, &TXbuffer[0][0]);
+
+
+
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -389,57 +404,75 @@ static void MX_GPIO_Init(void)
 /* USER CODE BEGIN 4 */
 void HAL_ETH_RxCpltCallback(ETH_HandleTypeDef *heth)
 {
-    arpheader *arphead;
 
-    for(int i = 0; i < ETH_RX_DESC_CNT; i++)
-    {
-
-        if((DMARxDscrTab[i].DESC3 & 0x80000000) == 0)
-        {
-            arphead = (arpheader *)&RXbuffer[i][0];
+	    uint32_t descidx = heth->RxDescList.RxDescIdx;
+	    ETH_DMADescTypeDef *dmarxdesc = &DMARxDscrTab[descidx];
 
 
-            if(arphead->frame.ETHtype == 0x0608)
-            {
-                char msg[] = "\r\n ARP erkezett";
-                HAL_UART_Transmit(&huart3, (uint8_t*)msg, strlen(msg), 100);
-
-                arpheader *send = (arpheader *)&TXbuffer[0][0];
-                Arpreply(send, arphead->sender_mac, arphead->sender_ip);
+	    while ((dmarxdesc->DESC3 & 0x80000000) == 0)
+	    {
+	    	ETHFrame *Frame = (ETHFrame *)&RXbuffer[descidx][0];
 
 
-                static ETH_BufferTypeDef tx_buffer;
-                tx_buffer.buffer = (uint8_t *)send;
-                tx_buffer.len = 64;
-                tx_buffer.next = NULL;
+	    	switch(Frame->ETHtype)
+	    	{
+	    		case 0x0608:
+					arp(&RXbuffer[descidx][0]);
+	    		break;
 
-                TxConfig.Length = 64;
-                TxConfig.TxBuffer = &tx_buffer;
-
-
-                TxConfig.Attributes = ETH_TX_PACKETS_FEATURES_CRCPAD;
-                TxConfig.CRCPadCtrl = ETH_CRC_PAD_INSERT;
+	    		default:
+	    			break;
 
 
-                SCB_CleanDCache_by_Addr((uint32_t *)send, 64);
 
 
-                HAL_StatusTypeDef tx_status = HAL_ETH_Transmit_IT(heth, &TxConfig);
-
-                char dbg[50];
-                sprintf(dbg, " - TX Status: %d\r\n", tx_status);
-                HAL_UART_Transmit(&huart3, (uint8_t*)dbg, strlen(dbg), 100);
-            }
 
 
-            DMARxDscrTab[i].DESC3 = 0xC1000000;
 
-            heth->Instance->DMACRDTPR = (uint32_t)&DMARxDscrTab[i];
-        }
-    }
+	    	}
+
+
+	        dmarxdesc->DESC3 = 0xC1000000;
+
+
+	        descidx = (descidx + 1) % ETH_RX_DESC_CNT;
+	        dmarxdesc = &DMARxDscrTab[descidx];
+
+
+	        heth->Instance->DMACRDTPR = (uint32_t)dmarxdesc;
+	    }
+
+
+	    heth->RxDescList.RxDescIdx = descidx;
+
+}
+static uint32_t FreeIdx = 0;
+uint8_t GetTxBuff()
+{
+	if((DMATxDscrTab[FreeIdx].DESC3 & 0x80000000) == 0)
+	{
+		uint8_t idxr = FreeIdx;
+		FreeIdx = (FreeIdx + 1) % ETH_TX_DESC_CNT;
+		return idxr;
+	}else return 255;
+
 }
 
+void Transmit(uint16_t len, uint8_t TXBuffIndex)
+{
+    static ETH_BufferTypeDef tx_buffer;
 
+
+    tx_buffer.buffer = TXbuffer[TXBuffIndex];
+    tx_buffer.len = len;
+    tx_buffer.next = NULL;
+
+    TxConfig.Length = len;
+    TxConfig.TxBuffer = &tx_buffer;
+
+
+     HAL_ETH_Transmit_IT(&heth, &TxConfig);
+}
 /* USER CODE END 4 */
 
  /* MPU Configuration */
