@@ -91,6 +91,10 @@
     * I realized I don't need to set the RX desc2 to the next descriptor address because I have the H753, and it handles the ring automatically. 
     * I tried to understand how the HAL driver really handles the TX process. I struggled here a lot because I did not understand why it was not working despite doing everything as the HAL driver manual says. Finally, I realized that the CubeMX default pinout for the ETH TX was bad, after modification, I finally saw the reply frame in Wireshark. It was not perfect because I sent out a larger memory space than the frame, so there were a couple of bytes of memory garbage at the end of it, but it was working.
 * Since both the test ARP request and the reply were successfully working, I started to work on a more structured and usable solution. I created the arp.c file to contain the logic and only left a minimal frame processing and switch-case logic to decide how to handle the frame based on the EtherType field.
+* I had a for loop that tested every single descriptor during every callback, which was probably not the best way to do it.
+* I tried to just use the RxDescIdx to find the current frame, but then I realized that if a new frame comes in while the callback is still running, it  get stuck because the interrupt doesn't fire again.
+* So I added a while loop to check the OWN bit in DESC3 to see who owns the memory. Now it just keeps processing frames as long as it finds ones that belong to the CPU, and then it increments the index and moves on.
 * I declared the GetTxBuff() function to handle the buffers, it returns the index of the next free buffer in the ring.
 * I created the Transmit(uint16_t len, uint8_t TXBuffIndex) function it is basically a wrapper around HAL_ETH_Transmit_IT(&heth, &TxConfig) with the necessary configs and setups.
 * I created a very basic ARP table for now it will only contain three fields: MAC address, IP address, and State. I will add the timers later.
+<img width="1260" height="394" alt="image" src="https://github.com/user-attachments/assets/edba6eee-16a0-46b4-a227-5f55e2e33054" />
