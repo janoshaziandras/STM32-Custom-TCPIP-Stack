@@ -4,9 +4,7 @@
 * **Research and Requirements**: Laid down the project expectations and research goals.
 * **Ultimate Objective**: Develop a custom minimal TCP/IP stack and SDN controller functions for the NUCLEO H753ZI development board.
 * **Software Acquisition**: STM32CubeMX and STM32CubeIDE will be used for the development process.
-* **Study**: Read through the development board's datasheet and familiarized myself with unknown concepts.
 * **Exploration**: Explored the possibilities within STM32CubeMX.
-* **Documentation**: Acquired essential documents: Reference Manual and HAL Driver Manual.
 
 ### 2026.02.08
 * **First Milestone**: Receive Ethernet frames and immediately output them via UART.
