@@ -99,6 +99,7 @@
 * I created a very basic ARP table for now it will only contain three fields: MAC address, IP address, and State. I will add the timers later.
 <img width="1260" height="394" alt="image" src="https://github.com/user-attachments/assets/edba6eee-16a0-46b4-a227-5f55e2e33054" />
 ### 2026.03.10
+
 * While I worked on the **IP header**, I realized that the structure I chose to follow was not sustainable. I was just thinking about it for days without doing anything, but today I finally moved past it and just did something; I will worry about anything else later.
 * I created a **base variable for ARP**. It makes the code a little bit tidier and maybe faster if I understand it correctly, but when I fill up the structure one by one, each is a copy process which is slower than one big copy (`*arp = arpbase`). I am not sure if it is better, but it looks much cleaner.
 * I moved the functions from `headers.h` to `arp.c`.
