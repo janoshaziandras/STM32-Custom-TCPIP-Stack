@@ -9,11 +9,17 @@
 #define SRC_HEADERS_H_
 #include "stm32h7xx_hal.h"
 #include <stdint.h>
+#include "string.h"
+#include "stdio.h"
 
 
-
+extern uint8_t RXbuffer[ETH_RX_DESC_CNT][1536] __attribute__((aligned(32))) __attribute__((section(".RxBufferSection")));
+extern uint8_t TXbuffer[ETH_TX_DESC_CNT][1536] __attribute__((aligned(32))) __attribute__((section(".TxBufferSection")));
 extern ETH_HandleTypeDef heth;
-
+extern void initarp();
+extern void writeline(const char* fmt, ...);
+extern void packetHandler(uint8_t *RXframe, uint8_t index);
+extern void icmpHandler(uint8_t *RXframe, uint8_t index);
 #define htons(x) __builtin_bswap16(x)
 #pragma pack(push, 1)
 
@@ -36,7 +42,7 @@ typedef struct
 
 typedef struct
 {
-	ETHFrame frame;
+
 	uint16_t Hardwer_Type;
 	uint16_t Protocol_Type;
 	uint8_t Hardware_Length;
@@ -48,6 +54,11 @@ typedef struct
 	ipv4 target_ip;
 
 } arpheader;
+
+
+
+
+
 
  typedef struct
  {
@@ -66,43 +77,55 @@ typedef struct
 
 } arprec;
 
+typedef struct
+{
+	uint8_t Ver_IHL;
+	uint8_t ToS;
+	uint16_t TotalLenght;
+	uint16_t Identification;
+	uint16_t Flag_Fregmantoff;
+	uint8_t TimeToLive;
+	uint8_t Protocol;
+	uint16_t HeaderChecksum;
+	ipv4 source;
+	ipv4 destination;
+
+
+
+
+}IPv4header;
+
+typedef struct
+{
+	uint8_t type;
+	uint8_t code;
+	uint16_t checksum;
+	uint16_t identifier;
+	uint16_t sequenceNumber;
+
+
+
+}ICMP;
+
 extern tempips tempss;
 extern const MAC_Addr_t MAC_BROADCAST;
 extern const MAC_Addr_t MAC_NULL;
+extern void arpreqvest(ipv4 ipv4add, uint8_t *TXframe);
 
-static inline void Arpreply(arpheader *arp, MAC_Addr_t target_mac, ipv4 tgip)
+
+static inline void GenETHHeader(ETHFrame *frame, MAC_Addr_t dest, uint16_t type)
 {
-	arp->frame.src_add = *(MAC_Addr_t *)heth.Init.MACAddr;
-	arp->frame.dest_add = target_mac;
-	arp->frame.ETHtype = htons(0x0806) ;
-	arp->Hardwer_Type= htons(1); //ethernet
-	arp->Protocol_Type= htons(0x0800); // ipv4
-	arp->Hardware_Length = 6;
-	arp->Protocol_Length = 4;
-	arp->Operation = htons(2); // reply
-	arp->sender_mac = *(MAC_Addr_t *)heth.Init.MACAddr;
-	arp->sender_ip = tempss.IPv4_add;
-	arp->target_mac = target_mac;
-	arp->target_ip =  tgip;
-
+	frame->dest_add = dest;
+	frame->src_add = *(MAC_Addr_t *)heth.Init.MACAddr;
+	frame->ETHtype = type;
 
 }
-static inline void ArpReq(arpheader *arp, ipv4 tgip)
-{
-	arp->frame.src_add = *(MAC_Addr_t *)heth.Init.MACAddr;
-	arp->frame.dest_add = MAC_BROADCAST;
-	arp->frame.ETHtype = htons(0x0806) ;
-	arp->Hardwer_Type= htons(1); //ethernet
-	arp->Protocol_Type= htons(0x0800); // ipv4
-	arp->Hardware_Length = 6;
-	arp->Protocol_Length = 4;
-	arp->Operation = htons(1); // reqwest
-	arp->sender_mac = *(MAC_Addr_t *)heth.Init.MACAddr;
-	arp->sender_ip = tempss.IPv4_add;
-	arp->target_mac = MAC_NULL;
-	arp->target_ip =  tgip;
 
-}
+
+
+
+
+
 #pragma pack(pop)
 
 void arp(uint8_t *rx_frame);

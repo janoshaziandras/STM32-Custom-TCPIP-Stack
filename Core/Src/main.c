@@ -19,6 +19,8 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "string.h"
+#include <stdarg.h>
+#include <stdio.h>
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -70,7 +72,8 @@ uint8_t RXbuffer[ETH_RX_DESC_CNT][1536] __attribute__((aligned(32))) __attribute
 uint8_t TXbuffer[ETH_TX_DESC_CNT][1536] __attribute__((aligned(32))) __attribute__((section(".TxBufferSection")));
 tempips tempss;
 const MAC_Addr_t MAC_BROADCAST = {{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}};
-const MAC_Addr_t MAC_NULL = {{0x00, 0x00, 0x00, 0x00, 0x00, 0x00}};
+
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -86,7 +89,21 @@ static void MX_USART3_UART_Init(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+void writeline(const char* fmt, ...) {
+    char buf[256];
+    va_list args;
+    va_start(args, fmt);
 
+
+    int len = vsnprintf(buf, sizeof(buf) - 2, fmt, args);
+    va_end(args);
+
+    if (len > 0) {
+
+        strcat(buf, "\r\n");
+        HAL_UART_Transmit(&huart3, (uint8_t*)buf, strlen(buf), 100);
+    }
+}
 /* USER CODE END 0 */
 
 /**
@@ -179,17 +196,17 @@ int main(void)
 
 
 
+  initarp();
 
-
-  char debugMsg3[64];
+  	char debugMsg3[64];
     sprintf(debugMsg3, "Status -> Err: 0x%lx, DMA: 0x%lx\r\n", errorCode, dmaError);
     HAL_UART_Transmit(&huart3, (uint8_t*)debugMsg3, strlen(debugMsg3), 100);
 
 
     HAL_Delay(3000);
 
-    ipv4 target_ip = { .addr = {192, 168, 1, 61} };
-    arpreq(target_ip, &TXbuffer[0][0]);
+    ipv4 target_ip = { .addr = {192, 168, 1, 62} };
+    arpreqvest(target_ip, &TXbuffer[0][0]);
 
 
 
@@ -314,7 +331,7 @@ static void MX_ETH_Init(void)
 
 }
 
-/**
+/**(például az lwIP stacket használókkal)
   * @brief USART3 Initialization Function
   * @param None
   * @retval None
@@ -405,6 +422,7 @@ static void MX_GPIO_Init(void)
 void HAL_ETH_RxCpltCallback(ETH_HandleTypeDef *heth)
 {
 
+
 	    uint32_t descidx = heth->RxDescList.RxDescIdx;
 	    ETH_DMADescTypeDef *dmarxdesc = &DMARxDscrTab[descidx];
 
@@ -417,8 +435,18 @@ void HAL_ETH_RxCpltCallback(ETH_HandleTypeDef *heth)
 	    	switch(Frame->ETHtype)
 	    	{
 	    		case 0x0608:
-					arp(&RXbuffer[descidx][0]);
+
+					arp(&RXbuffer[descidx][sizeof(ETHFrame)]);
 	    		break;
+
+	    		case htons(0x0800):
+	    				packetHandler(&RXbuffer[descidx][sizeof(ETHFrame)], descidx );
+	    		break;
+
+	    		case htons(0x88CC):
+	    				writeline("lldp recived");
+	    		break;
+
 
 	    		default:
 	    			break;
@@ -446,6 +474,8 @@ void HAL_ETH_RxCpltCallback(ETH_HandleTypeDef *heth)
 	    heth->RxDescList.RxDescIdx = descidx;
 
 }
+
+
 static uint32_t FreeIdx = 0;
 uint8_t GetTxBuff()
 {
@@ -510,7 +540,7 @@ void MPU_Config(void)
   */
 void Error_Handler(void)
 {
-  /* USER CODE BEGIN Error_Handler_Debug */
+  /* USER CODE BEGIN Error_Handler_DGenETHHeaderebug */
   /* User can add his own implementation to report the HAL error return state */
   __disable_irq();
   while (1)

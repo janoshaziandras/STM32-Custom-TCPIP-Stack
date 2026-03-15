@@ -98,3 +98,14 @@
 * I created the Transmit(uint16_t len, uint8_t TXBuffIndex) function it is basically a wrapper around HAL_ETH_Transmit_IT(&heth, &TxConfig) with the necessary configs and setups.
 * I created a very basic ARP table for now it will only contain three fields: MAC address, IP address, and State. I will add the timers later.
 <img width="1260" height="394" alt="image" src="https://github.com/user-attachments/assets/edba6eee-16a0-46b4-a227-5f55e2e33054" />
+### 2026.03.10
+* While I worked on the **IP header**, I realized that the structure I chose to follow was not sustainable. I was just thinking about it for days without doing anything, but today I finally moved past it and just did something; I will worry about anything else later.
+* I created a **base variable for ARP**. It makes the code a little bit tidier and maybe faster if I understand it correctly, but when I fill up the structure one by one, each is a copy process which is slower than one big copy (`*arp = arpbase`). I am not sure if it is better, but it looks much cleaner.
+* I moved the functions from `headers.h` to `arp.c`.
+* I Created a writeline function just for debugging i should have done it much earlier it makes it so much easier.
+* I created two more files: `packetHandler.c`, which processes the IP header, and `icmpHandler.c`. I built up the processing structure and, to my surprise, it was successful on the first try the test message appered at the console.
+* I started to work on the reply. This was chaotic at first; I tried the same way as with ARP—creating a base and copying that—but I dropped the idea. Why would I reconstruct the whole packet with lots of little copies when I can just copy the whole thing, swap a couple of values, and be done? I am not sure if it is the most efficient method, but I decided to care about it when I have something usable.
+* I realized I need the **whole frame** for this copy action. I had a couple of ideas on how to get it, but I chose to just pass the **RXbuffer ring address** to the next process.
+* I had a little bit of trouble with the sizes, but I figured it out. In the `memcpy`, I am unnecessarily copying the whole buffer, but I am afraid of **IPv4 options** and wasn't able to think of a fancy solution, so I left it as is for now.
+* I started a test and was expecting **checksum errors** in Wireshark, but to my surprise, there were none. It took some time to realize that I just swapped the addresses, and since addition is **commutative**, there is no need for recalculation. However, the ICMP checksum was correct too, which shouldn't be because the type field was modified. Then I realized the hardware is doing it on its own via `TxConfig.ChecksumCtrl = ETH_CHECKSUM_IPHDR_PAYLOAD_INSERT_PHDR_CALC;`. I thought this only affected the Ethernet frame, but it looks like it doesn't.
+
