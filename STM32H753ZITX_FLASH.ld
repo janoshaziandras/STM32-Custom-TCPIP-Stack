@@ -167,27 +167,19 @@ SECTIONS
     . = ALIGN(8);
   } >RAM_D1
 
- .ethDescriptors 0x30000000 (NOLOAD) :
+  .eth_memory (NOLOAD) :
   {
     . = ALIGN(32);
     *(.RxDescripSection)
-    . = 0x80;              
+    
+    . = ALIGN(32);
     *(.TxDescripSection)
-    . = 0x100;             
-  } >ETH
-
-  .ethRxBuffers 0x30000100 (NOLOAD) :
-  {
+    
     . = ALIGN(32);
     *(.RxBufferSection)
-    . = 0x1800;            
-  } >ETH
-
-  .ethTxBuffers 0x30001900 (NOLOAD) :
-  {
+    
     . = ALIGN(32);
     *(.TxBufferSection)
-    . = 0x1800;            
   } >ETH
 
   /* Remove information from the standard libraries */
@@ -200,5 +192,3 @@ SECTIONS
 
   .ARM.attributes 0 : { *(.ARM.attributes) }
 }
-
-

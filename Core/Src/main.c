@@ -19,12 +19,11 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "string.h"
-#include <stdarg.h>
-#include <stdio.h>
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "headers.h"
+
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -64,13 +63,23 @@ ETH_TxPacketConfig TxConfig;
 
 ETH_HandleTypeDef heth;
 
+RNG_HandleTypeDef hrng;
+
+TIM_HandleTypeDef htim6;
+
 UART_HandleTypeDef huart3;
 DMA_HandleTypeDef hdma_usart3_tx;
+DMA_HandleTypeDef hdma_usart3_rx;
 
 /* USER CODE BEGIN PV */
 uint8_t RXbuffer[ETH_RX_DESC_CNT][1536] __attribute__((aligned(32))) __attribute__((section(".RxBufferSection")));
 uint8_t TXbuffer[ETH_TX_DESC_CNT][1536] __attribute__((aligned(32))) __attribute__((section(".TxBufferSection")));
 tempips tempss;
+uint32_t tim6time = 0;
+
+
+
+
 const MAC_Addr_t MAC_BROADCAST = {{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}};
 
 
@@ -83,27 +92,15 @@ static void MX_GPIO_Init(void);
 static void MX_DMA_Init(void);
 static void MX_ETH_Init(void);
 static void MX_USART3_UART_Init(void);
+static void MX_RNG_Init(void);
+static void MX_TIM6_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-void writeline(const char* fmt, ...) {
-    char buf[256];
-    va_list args;
-    va_start(args, fmt);
 
-
-    int len = vsnprintf(buf, sizeof(buf) - 2, fmt, args);
-    va_end(args);
-
-    if (len > 0) {
-
-        strcat(buf, "\r\n");
-        HAL_UART_Transmit(&huart3, (uint8_t*)buf, strlen(buf), 100);
-    }
-}
 /* USER CODE END 0 */
 
 /**
@@ -152,6 +149,8 @@ int main(void)
   MX_DMA_Init();
   MX_ETH_Init();
   MX_USART3_UART_Init();
+  MX_RNG_Init();
+  MX_TIM6_Init();
   /* USER CODE BEGIN 2 */
   memset(DMARxDscrTab, 0, sizeof(DMARxDscrTab));
 
@@ -176,13 +175,12 @@ int main(void)
 
   if (HAL_ETH_Start_IT(&heth) != HAL_OK)
   {
-      char *msg = "ETH ERROR\r\n";
-      HAL_UART_Transmit(&huart3, (uint8_t*)msg, 13, 100);
+      writeline("ETH_erorr");
   }
   else
   {
-      char *msg = "ETH STARTED\r\n";
-      HAL_UART_Transmit(&huart3, (uint8_t*)msg, 29, 100);
+      writeline("ETH_STARTED_SUCESSFULLY");
+      PTP_Init();
   }
 
   ETH_MACFilterConfigTypeDef FilterConf;
@@ -194,19 +192,16 @@ int main(void)
   uint32_t errorCode = HAL_ETH_GetError(&heth);
   uint32_t dmaError = HAL_ETH_GetDMAError(&heth);
 
-
+writeline("ETH_Err: %d DMA_Err: %d ",errorCode, dmaError);
 
   initarp();
 
-  	char debugMsg3[64];
-    sprintf(debugMsg3, "Status -> Err: 0x%lx, DMA: 0x%lx\r\n", errorCode, dmaError);
-    HAL_UART_Transmit(&huart3, (uint8_t*)debugMsg3, strlen(debugMsg3), 100);
+  	
 
 
     HAL_Delay(3000);
 
-    ipv4 target_ip = { .addr = {192, 168, 1, 62} };
-    arpreqvest(target_ip, &TXbuffer[0][0]);
+
 
 
 
@@ -214,8 +209,13 @@ int main(void)
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
+    HAL_TIM_Base_Start_IT(&htim6);
   while (1)
   {
+	  console_process();
+
+
+
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -245,9 +245,10 @@ void SystemClock_Config(void)
   /** Initializes the RCC Oscillators according to the specified parameters
   * in the RCC_OscInitTypeDef structure.
   */
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI48|RCC_OSCILLATORTYPE_HSI;
   RCC_OscInitStruct.HSIState = RCC_HSI_DIV1;
   RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
+  RCC_OscInitStruct.HSI48State = RCC_HSI48_ON;
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
   RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSI;
   RCC_OscInitStruct.PLL.PLLM = 4;
@@ -321,6 +322,10 @@ static void MX_ETH_Init(void)
     Error_Handler();
   }
 
+  memset(&TxConfig, 0 , sizeof(ETH_TxPacketConfig));
+  TxConfig.Attributes = ETH_TX_PACKETS_FEATURES_CSUM | ETH_TX_PACKETS_FEATURES_CRCPAD;
+  TxConfig.ChecksumCtrl = ETH_CHECKSUM_IPHDR_PAYLOAD_INSERT_PHDR_CALC;
+  TxConfig.CRCPadCtrl = ETH_CRC_PAD_INSERT;
   /* USER CODE BEGIN ETH_Init 2 */
 
   memset(&TxConfig, 0 , sizeof(ETH_TxPacketConfig));
@@ -331,7 +336,72 @@ static void MX_ETH_Init(void)
 
 }
 
-/**(például az lwIP stacket használókkal)
+/**
+  * @brief RNG Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_RNG_Init(void)
+{
+
+  /* USER CODE BEGIN RNG_Init 0 */
+
+  /* USER CODE END RNG_Init 0 */
+
+  /* USER CODE BEGIN RNG_Init 1 */
+
+  /* USER CODE END RNG_Init 1 */
+  hrng.Instance = RNG;
+  hrng.Init.ClockErrorDetection = RNG_CED_ENABLE;
+  if (HAL_RNG_Init(&hrng) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN RNG_Init 2 */
+
+  /* USER CODE END RNG_Init 2 */
+
+}
+
+/**
+  * @brief TIM6 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM6_Init(void)
+{
+
+  /* USER CODE BEGIN TIM6_Init 0 */
+
+  /* USER CODE END TIM6_Init 0 */
+
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+
+  /* USER CODE BEGIN TIM6_Init 1 */
+
+  /* USER CODE END TIM6_Init 1 */
+  htim6.Instance = TIM6;
+  htim6.Init.Prescaler = 23999;
+  htim6.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim6.Init.Period = 1999;
+  htim6.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim6) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim6, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM6_Init 2 */
+
+  /* USER CODE END TIM6_Init 2 */
+
+}
+
+/**
   * @brief USART3 Initialization Function
   * @param None
   * @retval None
@@ -392,6 +462,9 @@ static void MX_DMA_Init(void)
   /* DMA1_Stream0_IRQn interrupt configuration */
   HAL_NVIC_SetPriority(DMA1_Stream0_IRQn, 0, 0);
   HAL_NVIC_EnableIRQ(DMA1_Stream0_IRQn);
+  /* DMA1_Stream1_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Stream1_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Stream1_IRQn);
 
 }
 
@@ -423,6 +496,7 @@ void HAL_ETH_RxCpltCallback(ETH_HandleTypeDef *heth)
 {
 
 
+
 	    uint32_t descidx = heth->RxDescList.RxDescIdx;
 	    ETH_DMADescTypeDef *dmarxdesc = &DMARxDscrTab[descidx];
 
@@ -444,7 +518,7 @@ void HAL_ETH_RxCpltCallback(ETH_HandleTypeDef *heth)
 	    		break;
 
 	    		case htons(0x88CC):
-	    				writeline("lldp recived");
+
 	    		break;
 
 
@@ -475,18 +549,55 @@ void HAL_ETH_RxCpltCallback(ETH_HandleTypeDef *heth)
 
 }
 
-
-static uint32_t FreeIdx = 0;
-uint8_t GetTxBuff()
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
-	if((DMATxDscrTab[FreeIdx].DESC3 & 0x80000000) == 0)
-	{
-		uint8_t idxr = FreeIdx;
-		FreeIdx = (FreeIdx + 1) % ETH_TX_DESC_CNT;
-		return idxr;
-	}else return 255;
+
+
+	if (htim->Instance == TIM6)
+	    {
+        tim6time += 1;
+
+			TCP_retrans();
+	        TCP_clean_table();
+
+
+
+
+	    }
+
+
+
 
 }
+
+
+
+bufferinf tcp_buff_lock[ETH_TX_DESC_CNT];
+static int8_t NextBuff = 0;
+
+uint8_t GetTxBuff(void)
+{
+    uint8_t Sindex = NextBuff;
+
+    while(1)
+    {
+        if (((DMATxDscrTab[NextBuff].DESC3 & 0x80000000) == 0) && (tcp_buff_lock[NextBuff].is_locked == 0))
+        {
+            uint8_t idxr = NextBuff;
+            NextBuff = (NextBuff + 1) % ETH_TX_DESC_CNT;
+            return idxr;
+        }
+
+        NextBuff = (NextBuff + 1) % ETH_TX_DESC_CNT;
+
+        if (NextBuff == Sindex)
+        {
+            return 255;
+        }
+    }
+}
+
+
 
 void Transmit(uint16_t len, uint8_t TXBuffIndex)
 {
@@ -503,6 +614,39 @@ void Transmit(uint16_t len, uint8_t TXBuffIndex)
 
      HAL_ETH_Transmit_IT(&heth, &TxConfig);
 }
+
+
+void PTP_Init(void) {
+
+    heth.Instance->MACTSCR = ETH_MACTSCR_TSENA | ETH_MACTSCR_TSENALL | ETH_MACTSCR_TSCTRLSSR;
+
+
+    heth.Instance->MACSSIR = (4 << 16);
+
+
+    heth.Instance->MACTSAR = 0xFFFFFFFF;
+
+
+    heth.Instance->MACTSCR |= ETH_MACTSCR_TSADDREG;
+    while((heth.Instance->MACTSCR & ETH_MACTSCR_TSADDREG) == ETH_MACTSCR_TSADDREG);
+
+    heth.Instance->MACSTSUR = 0;
+    heth.Instance->MACSTNUR = 0;
+
+
+    heth.Instance->MACTSCR |= ETH_MACTSCR_TSINIT;
+    while((heth.Instance->MACTSCR & ETH_MACTSCR_TSINIT) == ETH_MACTSCR_TSINIT);
+}
+
+PTP_Time Get_MAC_Time(void) {
+    PTP_Time t;
+
+    t.seconds = heth.Instance->MACSTSR;
+    t.nanoseconds = heth.Instance->MACSTNR;
+    return t;
+}
+
+
 /* USER CODE END 4 */
 
  /* MPU Configuration */
@@ -540,7 +684,11 @@ void MPU_Config(void)
   */
 void Error_Handler(void)
 {
-  /* USER CODE BEGIN Error_Handler_DGenETHHeaderebug */
+  /* USER CODE BEGIN Error_Handler_Debug */
+writeline("Unexpected erorr has occured (Error_Handler)");
+
+
+
   /* User can add his own implementation to report the HAL error return state */
   __disable_irq();
   while (1)
@@ -551,7 +699,7 @@ void Error_Handler(void)
 #ifdef USE_FULL_ASSERT
 /**
   * @brief  Reports the name of the source file and the source line number
-  * where the assert_param error has occurred.
+  *         where the assert_param error has occurred.
   * @param  file: pointer to the source file name
   * @param  line: assert_param error line source number
   * @retval None

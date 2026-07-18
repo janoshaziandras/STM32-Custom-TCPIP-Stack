@@ -136,7 +136,7 @@ void arp(uint8_t *RXframe)
 }
 
 }
-void arpreqvest(ipv4 ipv4add, uint8_t *TXframe)
+void arpreqvest(ipv4 ipv4add)
 {
 
 	uint8_t BuffIndex = GetTxBuff();
@@ -152,7 +152,21 @@ void arpreqvest(ipv4 ipv4add, uint8_t *TXframe)
 
 }
 
+uint8_t getmac(ipv4 ip, MAC_Addr_t *out_mac)
+{
+    for( int i = 0; i < 10; i++)
+    {
+    	if( memcmp(arptable[i].ipadd.addr, ip.addr, 4) == 0 )
+        {
 
+            *out_mac = arptable[i].macadd;
+            return 1;
+        }
+    }
+    arpreqvest(ip);
+
+    return 0;
+}
 
 
 

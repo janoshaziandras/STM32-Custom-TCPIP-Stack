@@ -18,8 +18,19 @@ void packetHandler(uint8_t *RXframe, uint8_t index)
 		case 1:
 
 			icmpHandler(RXframe + ihl * 4, index);
+			break;
 
-		break;
+		case 6: // TCP
+		    {
+		        packetinf inf;
+		        inf.rx_index = index;
+		        inf.ip = packet;
+		        inf.transport_hdr = (RXframe + ihl * 4);
+		        //writeline("tcp packet received");
+		        tcphandler(&inf);
+
+		    }
+		    break;
 		default:
 			break;
 
