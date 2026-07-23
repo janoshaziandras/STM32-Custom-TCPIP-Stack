@@ -1,12 +1,8 @@
 #include "headers.h"
 #include "main.h"
 
-
-
-
 arprec arptable[10];
 arpheader arpbase;
-
 
 void initarp()
 {
@@ -22,10 +18,7 @@ void initarp()
 			.target_mac = MAC_BROADCAST,
 			.target_ip = {{0x00, 0x00, 0x00, 0x00}}
 
-
 			};
-
-
 
 }
 
@@ -37,11 +30,9 @@ typedef struct {
 	static void GenArpreply(arpheader *arp, MAC_Addr_t target_mac, ipv4 tgip)
 	{
 
-
 		*arp = arpbase;
 		arp->target_mac = target_mac;
 		arp->target_ip = tgip;
-
 
 	}
 
@@ -53,13 +44,6 @@ typedef struct {
 			arp->target_ip = tgip;
 
 	}
-
-
-
-
-
-
-
 
 void handletable(arpheader *arphead)
 {
@@ -100,13 +84,8 @@ void handletable(arpheader *arphead)
 
 			    }
 
-
-
 void arp(uint8_t *RXframe)
 {
-
-
-
 
 	arpheader *arphead = (arpheader *)RXframe;
 
@@ -125,13 +104,10 @@ void arp(uint8_t *RXframe)
 
 		Transmit(sizeof(ARPPacket), BuffIndex);
 
-
-
 	}
 }else if(arphead->Operation == htons(2))
 {
 	handletable(arphead );
-
 
 }
 
@@ -148,7 +124,6 @@ void arpreqvest(ipv4 ipv4add)
 		Transmit(sizeof(ARPPacket), BuffIndex);
 
 	}
-
 
 }
 
@@ -167,17 +142,3 @@ uint8_t getmac(ipv4 ip, MAC_Addr_t *out_mac)
 
     return 0;
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-

@@ -74,6 +74,7 @@ DMA_HandleTypeDef hdma_usart3_rx;
 /* USER CODE BEGIN PV */
 uint8_t RXbuffer[ETH_RX_DESC_CNT][1536] __attribute__((aligned(32))) __attribute__((section(".RxBufferSection")));
 uint8_t TXbuffer[ETH_TX_DESC_CNT][1536] __attribute__((aligned(32))) __attribute__((section(".TxBufferSection")));
+packetinf inf[ETH_RX_DESC_CNT];
 tempips tempss;
 uint32_t tim6time = 0;
 
@@ -501,10 +502,13 @@ void HAL_ETH_RxCpltCallback(ETH_HandleTypeDef *heth)
 	    ETH_DMADescTypeDef *dmarxdesc = &DMARxDscrTab[descidx];
 
 
+
 	    while ((dmarxdesc->DESC3 & 0x80000000) == 0)
 	    {
 	    	ETHFrame *Frame = (ETHFrame *)&RXbuffer[descidx][0];
 
+	    	inf[descidx].eth_pointer = Frame;
+	    	inf[descidx].parsed_offset = sizeof(ETHFrame);
 
 	    	switch(Frame->ETHtype)
 	    	{
@@ -514,7 +518,7 @@ void HAL_ETH_RxCpltCallback(ETH_HandleTypeDef *heth)
 	    		break;
 
 	    		case htons(0x0800):
-	    				packetHandler(&RXbuffer[descidx][sizeof(ETHFrame)], descidx );
+	    				packetHandler(descidx);
 	    		break;
 
 	    		case htons(0x88CC):
@@ -533,9 +537,10 @@ void HAL_ETH_RxCpltCallback(ETH_HandleTypeDef *heth)
 
 	    	}
 
-
+	    		if(inf[descidx].bufflock == 0)
+	    		{
 	        dmarxdesc->DESC3 = 0xC1000000;
-
+	    		}
 
 	        descidx = (descidx + 1) % ETH_RX_DESC_CNT;
 	        dmarxdesc = &DMARxDscrTab[descidx];

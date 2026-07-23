@@ -4,9 +4,9 @@
 static void SendICMPechoReply(uint8_t index)
 {
     uint8_t TXind = GetTxBuff();
-    if(TXind < 4)
+    if(TXind < ETH_RX_DESC_CNT)
     {
-        IPv4header *rx_ip = (IPv4header *)(&RXbuffer[index][14]);
+        IPv4header *rx_ip = inf[index].ip_pointer;
         uint16_t original_ip_len = htons(rx_ip->TotalLenght);
         uint16_t fullLen = original_ip_len + sizeof(ETHFrame);
 
@@ -14,9 +14,8 @@ static void SendICMPechoReply(uint8_t index)
         memcpy(&TXbuffer[TXind][0], &RXbuffer[index][0], fullLen);
 
         ETHFrame *eth = (ETHFrame *)&TXbuffer[TXind][0];
-        IPv4header *ip = (IPv4header *)((uint8_t*)eth + 14);
-        uint8_t ipHl = (ip->Ver_IHL & 0b00001111) * 4;
-        ICMP *icmp = (ICMP *)((uint8_t*)ip + ipHl);
+        IPv4header *ip = (IPv4header *)&TXbuffer[TXind][sizeof(ETHFrame)];
+        ICMP *icmp = (ICMP *)&TXbuffer[TXind][inf[index].parsed_offset];
 
 
         eth->dest_add = eth->src_add;
@@ -31,15 +30,15 @@ static void SendICMPechoReply(uint8_t index)
         icmp->checksum = 0;
 
 
-        PTP_Time current_time = Get_MAC_Time();
+        //PTP_Time current_time = Get_MAC_Time();
 
 
-        uint32_t sec_net = htonl(current_time.seconds);
-        uint32_t nsec_net = htonl(current_time.nanoseconds);
+        //uint32_t sec_net = htonl(current_time.seconds);
+        //uint32_t nsec_net = htonl(current_time.nanoseconds);
 
 
-        memcpy(&TXbuffer[TXind][fullLen], &sec_net, 4);
-        memcpy(&TXbuffer[TXind][fullLen + 4], &nsec_net, 4);
+        //memcpy(&TXbuffer[TXind][fullLen], &sec_net, 4);
+        //memcpy(&TXbuffer[TXind][fullLen + 4], &nsec_net, 4);
 
 
         ip->TotalLenght = htons(original_ip_len + 8);
@@ -53,9 +52,9 @@ static void SendICMPechoReply(uint8_t index)
     }
 }
 
-void icmpHandler(uint8_t *RXframe, uint8_t index)
+void icmpHandler(uint8_t index)
 {
-    ICMP *icmp = (ICMP *) RXframe;
+    ICMP *icmp = (ICMP *)&RXbuffer[index][inf[index].parsed_offset];
 
     switch(icmp->type)
     {

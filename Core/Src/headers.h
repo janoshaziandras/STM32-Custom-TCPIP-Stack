@@ -28,8 +28,8 @@ extern uint8_t TXbuffer[ETH_TX_DESC_CNT][1536] __attribute__((aligned(32))) __at
 extern ETH_HandleTypeDef heth;
 extern RNG_HandleTypeDef hrng;
 extern void initarp();
-extern void packetHandler(uint8_t *RXframe, uint8_t index);
-extern void icmpHandler(uint8_t *RXframe, uint8_t index);
+extern void packetHandler(uint8_t index);
+extern void icmpHandler(uint8_t index);
 extern void TCP_retrans();
 extern void TCP_clean_table();
 
@@ -87,6 +87,7 @@ typedef struct
 	MAC_Addr_t macadd;
 	ipv4 ipadd;
 	uint8_t  state;
+
 
 
 
@@ -158,16 +159,20 @@ typedef struct
 
 typedef struct
 {
-	uint8_t rx_index;
-	uint16_t total_length;
-	ETHFrame   *eth_hdr;
-	IPv4header *ip_hdr;
-	uint8_t IHL;
-	IPv4header *ip;
-	void *transport_hdr;
-	uint8_t    *payload;
+
+	uint16_t parsed_offset;
+	ETHFrame   *eth_pointer;
+	IPv4header *ip_pointer;
+	TCP *tcp_pointer;
+
+
+	uint8_t    *payload_pointer;
+
+	uint8_t bufflock;
 
 }packetinf;
+
+extern packetinf inf[ETH_RX_DESC_CNT];
 
 
 typedef struct{
@@ -211,6 +216,7 @@ typedef struct
 	uint16_t data_len;
 	uint8_t retry_count;
 	
+
 } bufferinf;
 
 extern bufferinf tcp_buff_lock[ETH_TX_DESC_CNT];
@@ -227,7 +233,17 @@ typedef enum {
 } TCPstates;
 
 
+typedef struct
+{
+	uint8_t version;
+	uint8_t type;
+	uint16_t lenght;
+	uint32_t xid;
 
+
+
+
+}opflow_header;
 
 
 
@@ -246,7 +262,7 @@ extern tempips tempss;
 extern const MAC_Addr_t MAC_BROADCAST;
 extern const MAC_Addr_t MAC_NULL;
 extern void arpreqvest(ipv4 ipv4add);
-extern void tcphandler(packetinf *inf);
+extern void tcphandler(uint8_t index);
 extern uint8_t getmac(ipv4 ip, MAC_Addr_t *out_mac);
 
 static inline void GenETHHeader(ETHFrame *frame, MAC_Addr_t dest, uint16_t type)

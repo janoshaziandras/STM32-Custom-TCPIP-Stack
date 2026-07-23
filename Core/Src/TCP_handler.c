@@ -6,20 +6,20 @@
 
 tcpconnection tcptable[8];
 
-
 static uint8_t newConnection(void);
-static uint8_t getConnindx(TCP *tcp, packetinf *inf);
+static uint8_t getConnindx(TCP *tcp, uint8_t index);
 static uint8_t TCP_Handshake( TCP_Handshakeinf HSinf);
 
-
-
-void tcphandler(packetinf *inf)
+void tcphandler(uint8_t index)
 {
-	TCP *tcp = (TCP *)inf->transport_hdr;
+	TCP *tcp = (TCP *)&RXbuffer[index][inf[index].parsed_offset];
+	inf[index].tcp_pointer = tcp;
 
+	uint8_t tcp_hdr_len = ((htons(tcp->doffResFlag) >> 12) & 0x0F) * 4;
+	inf[index].parsed_offset += tcp_hdr_len;
+	inf[index].payload_pointer = &RXbuffer[index][inf[index].parsed_offset];
 
-	uint8_t Tindex = getConnindx(tcp, inf);
-
+	uint8_t Tindex = getConnindx(tcp, index);
 
 	// writeline("Kapcsolat indexe: %d", Tindex);
 
@@ -32,19 +32,13 @@ void tcphandler(packetinf *inf)
 			//  writeline("SYN_RECEIVED");
 			//  state machine frissitese es kitoltese es tabla feltoltese
 
-
-
 			tcptable[freeIdx].state = SYN_RECEIVED;
-			memcpy(tcptable[freeIdx].remote_ip.addr, inf->ip->source.addr, 4);
+			memcpy(tcptable[freeIdx].remote_ip.addr, inf[index].ip_pointer->source.addr, 4);
 			tcptable[freeIdx].remote_port = htons(tcp->srcPort);
 			tcptable[freeIdx].local_port = htons(tcp->desPort);
 
-
-
-
 			tcptable[freeIdx].remote_seq_expected = (htonl(tcp->seqNumber)) + 1;
 			tcptable[freeIdx].last_seen_ack = htonl(tcp->seqNumber); //fast retranshoz
-
 
 			//-------------------------------------------------------------------------------
 
@@ -61,12 +55,10 @@ void tcphandler(packetinf *inf)
 			// writeline("------------------------------");
 
 			TCP_Handshakeinf Hinf;
-			Hinf.data_len = htons(inf->ip->TotalLenght) - (inf->ip->Ver_IHL & 0x0F) * 4 - ((htons(tcp->doffResFlag) >> 12) & 0x0F) * 4 ;
+			Hinf.data_len = htons(inf[index].ip_pointer->TotalLenght) - (inf[index].ip_pointer->Ver_IHL & 0x0F) * 4 - tcp_hdr_len;
 			Hinf.flags = TCP_FLAG_ACK | TCP_FLAG_SYN;
 			Hinf.indx = freeIdx;
 			uint8_t err = TCP_Handshake(Hinf); // call execute function
-
-
 
 			if(err == 255)
 			{
@@ -75,37 +67,28 @@ void tcphandler(packetinf *inf)
 
 			}
 
-
 		}
 	}else if(Tindex != 255)// létezo kapcsolat.
 	{
 		// --- BEJÖVŐ CSOMAG LOGOLÁSA ---
 
-
 		writeline("state: %d ", tcptable[Tindex].state);
 		// ------------------------------
-
-
-
 
 		uint32_t recived_seq = htonl(tcp->seqNumber);
 		uint32_t recived_ack = htonl(tcp->ackNumber);
 
-		uint8_t ip_hdr_len = (inf->ip->Ver_IHL & 0x0F) * 4;
-		uint8_t tcp_hdr_len = ((htons(tcp->doffResFlag) >> 12) & 0x0F) * 4;
-		uint16_t payload_len = htons(inf->ip->TotalLenght) - ip_hdr_len - tcp_hdr_len;
+		uint8_t ip_hdr_len = (inf[index].ip_pointer->Ver_IHL & 0x0F) * 4;
+		uint16_t payload_len = htons(inf[index].ip_pointer->TotalLenght) - ip_hdr_len - tcp_hdr_len;
 		if(GET_TCP_FLAG(tcp->doffResFlag, TCP_FLAG_SYN) || GET_TCP_FLAG(tcp->doffResFlag, TCP_FLAG_FIN))
 		{
-			payload_len =+ 1;
+			payload_len += 1;
 		}
-
 
 		//global vars letezo kapcs eseten
 		//----------------------------------
 		tcptable[Tindex].last_seen_ack = tcptable[Tindex].local_seq_acked;
 		tcptable[Tindex].local_seq_acked = recived_ack;
-
-
 
 		//retransmit logic duplicated ack esetére
 
@@ -119,7 +102,6 @@ void tcphandler(packetinf *inf)
 					tcp_buff_lock[i].retry_count = 0;//buff_lock feloldasa.
 
 				}else{
-
 
 					if(tcptable[Tindex].last_seen_ack == recived_ack)
 					{
@@ -140,24 +122,30 @@ void tcphandler(packetinf *inf)
 						}
 						tcptable[Tindex].D_ack_counter++;
 
-
 					}
 				}
 				writeline("infos: %d  ack: %d seq: %d Dackcounter: %d ",Tindex , htons(tcp->ackNumber), tcp_buff_lock[i].seq_num, tcptable[Tindex].D_ack_counter++);
 
-
-
-
 			}
-
 
 		}
 		//retransmit logic duplicated ack esetére
 		//-----------------------------------------
 
-
-
 		//State machine allapotok kezelese
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 		if(tcptable[Tindex].state == ESTABLISHED)
 		{
@@ -165,8 +153,26 @@ void tcphandler(packetinf *inf)
 
 
 
-
 		}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -185,9 +191,6 @@ void tcphandler(packetinf *inf)
 			return;
 		}
 
-
-
-
 		if(tcptable[Tindex].state == ESTABLISHED && GET_TCP_FLAG(tcp->doffResFlag, TCP_FLAG_FIN))
 		{ writeline("FIN recived");
 		tcptable[Tindex].state = CLOSE_WAIT;
@@ -199,8 +202,6 @@ void tcphandler(packetinf *inf)
 		Hinf.flags = TCP_FLAG_FIN | TCP_FLAG_ACK;
 		Hinf.indx = Tindex;
 		uint8_t err = TCP_Handshake(Hinf);
-
-
 
 		writeline("FIN csomag erkezett. Allapot: CLOSE_WAIT -> LAST_ACK. Index: %d elkuldes allapota %d", Tindex, err);
 		return;
@@ -248,13 +249,13 @@ static uint8_t newConnection(void)
 	return 255;
 }
 
-static uint8_t getConnindx(TCP *tcp, packetinf *inf)
+static uint8_t getConnindx(TCP *tcp, uint8_t index)
 {
 	for(int i = 0; i < 8; i++)
 	{
 		if(tcptable[i].state != CLOSED)
 		{
-			if (*(uint32_t*)&tcptable[i].remote_ip == *(uint32_t*)&inf->ip->source)
+			if (*(uint32_t*)&tcptable[i].remote_ip == *(uint32_t*)&inf[index].ip_pointer->source)
 			{
 				if(htons(tcp->srcPort) == tcptable[i].remote_port &&
 						htons(tcp->desPort) == tcptable[i].local_port)
@@ -288,22 +289,11 @@ void TCP_retrans()
 
 			}
 
-
 		}
-
-
 
 	}
 
-
-
-
-
-
-
 	for(int i = 0; i < 8 ; i++){
-
-
 
 		if(tcptable[i].errstate == 255 && tcptable[i].state != CLOSED) //arp fail retry
 		{
@@ -316,8 +306,6 @@ void TCP_retrans()
 				{
 					tcptable[i].state = CLOSED;
 
-
-
 				}else{
 
 					tcptable[i].D_ack_counter++;
@@ -327,17 +315,13 @@ void TCP_retrans()
 			{
 				tcptable[i].errstate = 0;
 
-
 			}
-
-
 
 		}
 
-
-
 	}
 }
+
 static uint8_t TCP_Handshake( TCP_Handshakeinf HSinf)
 {
 	//ETH HEADER-----------------------------------
@@ -349,9 +333,6 @@ static uint8_t TCP_Handshake( TCP_Handshakeinf HSinf)
 		return 255;
 	}
 
-
-
-
 	uint8_t *tx_ptr = TXbuffer[buf_idx];
 
 	ETHFrame   *tx_eth = (ETHFrame *)tx_ptr;
@@ -362,7 +343,6 @@ static uint8_t TCP_Handshake( TCP_Handshakeinf HSinf)
 	tx_eth->ETHtype = htons(0x0800);
 	tx_eth->src_add = *(MAC_Addr_t *)heth.Init.MACAddr;
 	//IP HEADER------------------------------------------------------------
-
 
 	IPv4header *tx_ip  = (IPv4header *)(tx_ptr + sizeof(ETHFrame));
 
@@ -377,27 +357,17 @@ static uint8_t TCP_Handshake( TCP_Handshakeinf HSinf)
 	tx_ip->Protocol = 6;
 	//TCP HEDAER---------------------------------------------------------------
 
-
 	TCP *tx_tcp = (TCP *)(tx_ptr + sizeof(ETHFrame) + sizeof(IPv4header));
 
 	tx_tcp->desPort = htons(tcptable[HSinf.indx].remote_port);
 	tx_tcp->srcPort = htons(tcptable[HSinf.indx].local_port);
 
-
-
 	uint16_t doff = sizeof(TCP) / 4;
 
 	tx_tcp->doffResFlag = htons((doff << 12) | (000 << 9) | (HSinf.flags));
 
-
-
-
-
-
 	if(HSinf.flags == 0X12)  //if sin_ack
 			{
-
-
 
 		uint32_t ran = 0;
 		HAL_RNG_GenerateRandomNumber(&hrng, &ran);
@@ -408,37 +378,22 @@ static uint8_t TCP_Handshake( TCP_Handshakeinf HSinf)
 
 		tx_tcp->ackNumber = htonl(tcptable[HSinf.indx].remote_seq_expected);
 
-
-
-
-
-
-
 			}else if (HSinf.flags == 0x11)
 			{
 				tcptable[HSinf.indx].local_seq_sent++;
 				tx_tcp->seqNumber = htonl(tcptable[HSinf.indx].local_seq_sent);
 
-
-
-
 				tcptable[HSinf.indx].remote_seq_expected += HSinf.data_len;
 				tx_tcp->ackNumber = htonl(tcptable[HSinf.indx].remote_seq_expected);
 
-
 			}
-
-
 
 	tx_tcp->urgentPointer = 0;
 	tx_tcp->windowSize = htons(24000);
 
-
-
 	tcp_buff_lock[buf_idx].is_locked = 1;
 	tcp_buff_lock[buf_idx].seq_num =  tcptable[HSinf.indx].local_seq_sent;
 	tcp_buff_lock[buf_idx].conn_idx = HSinf.indx;
-
 
 	tcp_buff_lock[buf_idx].data_len = sizeof(IPv4header) + sizeof(TCP) + sizeof(ETHFrame);
 
