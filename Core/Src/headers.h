@@ -28,6 +28,7 @@ extern uint8_t TXbuffer[ETH_TX_DESC_CNT][1536] __attribute__((aligned(32))) __at
 extern ETH_HandleTypeDef heth;
 extern RNG_HandleTypeDef hrng;
 extern void initarp();
+extern void arp_aging(void);
 extern void packetHandler(uint8_t index);
 extern void icmpHandler(uint8_t index);
 extern void TCP_retrans();
@@ -87,6 +88,7 @@ typedef struct
 	MAC_Addr_t macadd;
 	ipv4 ipadd;
 	uint8_t  state;
+	uint32_t last_seen;
 
 
 
@@ -164,7 +166,7 @@ typedef struct
 	ETHFrame   *eth_pointer;
 	IPv4header *ip_pointer;
 	TCP *tcp_pointer;
-
+	uint8_t tti;
 
 	uint8_t    *payload_pointer;
 
@@ -190,17 +192,13 @@ typedef struct {
 	uint16_t local_port;
     uint16_t remote_port;
     uint8_t state;
-//default tcp table values
+    uint32_t local_seq_sent;
+    uint32_t local_seq_acked;
+    uint32_t remote_seq_expected;
 
-    uint32_t local_seq_sent;      // utoljara kkikuldott sajat bajt sorszama
-    uint32_t local_seq_acked;    // a remote altal utoljara visszaigazolt sorszam
-    uint32_t remote_seq_expected; // a remottol elvart kovetkezo sec (ki kuldott ack)
-
-	//Fast retransmit
 	uint32_t last_seen_ack;
 	uint8_t D_ack_counter;
 
-	//hardver hiba retrans
 	uint8_t errstate;
 	TCP_Handshakeinf hskaeinf;
 	
@@ -233,27 +231,166 @@ typedef enum {
 } TCPstates;
 
 
-typedef struct
-{
-	uint8_t version;
-	uint8_t type;
-	uint16_t lenght;
-	uint32_t xid;
+typedef struct {
+    uint8_t version;
+    uint8_t type;
+    uint16_t length;
+    uint32_t xid;
+} ofp_header;
+
+
+typedef struct {
+    uint16_t type;      
+    uint16_t length;    
+    uint32_t bitmap;    
+} ofp_hello_elem_versionbitmap;
 
 
 
+typedef struct {
 
-}opflow_header;
+    uint64_t datapath_id;
+    uint32_t n_buffers;
+    uint8_t  n_tables;
+    uint8_t  auxiliary_id;
+    uint8_t  pad[2];
+    uint32_t capabilities;
+    uint32_t reserved;
+} ofp_switch_features;
 
 
 
+typedef struct{
+  
+    uint16_t type;
+    uint16_t flags;
+    uint8_t pad[4];
+
+}ofp_multipart_request;
 
 
+
+typedef struct {
+    uint32_t port_no;       
+    uint8_t  pad[4];        
+    uint8_t  hw_addr[6];    
+    uint8_t  pad2[2];      
+    char     name[16];      
+    uint32_t config;        
+    uint32_t state;         
+    uint32_t curr;         
+    uint32_t advertised;    
+    uint32_t supported;     
+    uint32_t peer;          
+    uint32_t curr_speed;    
+    uint32_t max_speed;     
+}ofp_port;
+
+typedef struct {
+    uint8_t reason;    
+    uint8_t pad[7];    
+    ofp_port desc;     
+} ofp_port_status;
+
+
+typedef struct {
+    uint32_t buffer_id;     
+    uint16_t total_len;     
+    uint8_t  reason;        
+    uint8_t  table_id;      
+    uint64_t cookie;        
+}  ofp_packet_in_header;
+
+
+typedef struct {
+    uint16_t type;
+    uint16_t length;
+} ofp_match_header;
+
+typedef struct {
+    uint32_t oxm_header; 
+    uint32_t port_no;    
+} oxm_in_port_t;
 
 typedef struct {
     uint32_t seconds;
     uint32_t nanoseconds;
 } PTP_Time;
+
+typedef struct {
+    uint8_t index;
+    uint8_t mac[6];       
+    uint32_t port_no;     
+    uint8_t is_free;          
+} opf_mac_table_entry;
+
+
+typedef struct {
+    uint16_t type;      
+    uint16_t len;       
+    uint32_t port;      
+    uint16_t max_len;   
+    uint8_t  pad[6];   
+} ofp_action_output;
+
+
+typedef struct {
+    uint32_t buffer_id;   
+    uint32_t in_port;     
+    uint16_t actions_len; 
+    uint8_t  pad[6];
+   
+} ofp_packet_out;
+
+#define OFPP_FLOOD 0xfffffffb
+#define OFP_NO_BUFFER 0xffffffff
+
+
+#define MAC_TABLE_SIZE 128
+
+typedef struct {
+    uint8_t mac[6];     
+    uint32_t port_no;
+    uint32_t ip_addr;
+    uint8_t is_active; 
+    uint8_t tcp_index;
+} fdb_entry_t;
+
+typedef struct {
+    uint64_t cookie;
+    uint64_t cookie_mask;
+    uint8_t  table_id;
+    uint8_t  command;
+    uint16_t idle_timeout;
+    uint16_t hard_timeout;
+    uint16_t priority;
+    uint32_t buffer_id;
+    uint32_t out_port;
+    uint32_t out_group;
+    uint16_t flags;
+    uint8_t  pad[2];
+} ofp_flow_mod;
+
+typedef struct {
+    uint16_t type;
+    uint16_t len;
+    uint8_t  pad[4];
+} ofp_instruction_actions;
+
+#define MAX_SWITCHES 8
+
+typedef struct {
+    uint8_t active;
+    uint8_t neighbor_switch_idx;
+    uint32_t neighbor_port;
+} link_t;
+
+typedef struct {
+    link_t links[64];
+} switch_topology_t;
+
+
+extern switch_topology_t topology[MAX_SWITCHES];
 
 void PTP_Init(void);
 PTP_Time Get_MAC_Time(void);
@@ -264,8 +401,11 @@ extern const MAC_Addr_t MAC_NULL;
 extern void arpreqvest(ipv4 ipv4add);
 extern void tcphandler(uint8_t index);
 extern uint8_t getmac(ipv4 ip, MAC_Addr_t *out_mac);
-
+extern void opf_handler(uint8_t index);
+extern tcpconnection tcptable[8];
+uint8_t sendhello(uint8_t index);
 static inline void GenETHHeader(ETHFrame *frame, MAC_Addr_t dest, uint16_t type)
+
 {
 	frame->dest_add = dest;
 	frame->src_add = *(MAC_Addr_t *)heth.Init.MACAddr;
@@ -281,4 +421,4 @@ static inline void GenETHHeader(ETHFrame *frame, MAC_Addr_t dest, uint16_t type)
 #pragma pack(pop)
 
 void arp(uint8_t *rx_frame);
-#endif /* SRC_HEADERS_H_ */
+#endif

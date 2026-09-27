@@ -28,19 +28,6 @@ static void SendICMPechoReply(uint8_t index)
 
         icmp->type = 0;
         icmp->checksum = 0;
-
-
-        //PTP_Time current_time = Get_MAC_Time();
-
-
-        //uint32_t sec_net = htonl(current_time.seconds);
-        //uint32_t nsec_net = htonl(current_time.nanoseconds);
-
-
-        //memcpy(&TXbuffer[TXind][fullLen], &sec_net, 4);
-        //memcpy(&TXbuffer[TXind][fullLen + 4], &nsec_net, 4);
-
-
         ip->TotalLenght = htons(original_ip_len + 8);
 
 

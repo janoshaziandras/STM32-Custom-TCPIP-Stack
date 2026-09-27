@@ -155,8 +155,7 @@ int main(void)
   /* USER CODE BEGIN 2 */
   memset(DMARxDscrTab, 0, sizeof(DMARxDscrTab));
 
-  char *msg1 = "UART OK\r\n";
-  HAL_UART_Transmit(&huart3, (uint8_t*)msg1, 9, 100);
+  writeline("UART OK");
 
   for(int i = 0; i < ETH_RX_DESC_CNT; i++)
   {
@@ -193,30 +192,19 @@ int main(void)
   uint32_t errorCode = HAL_ETH_GetError(&heth);
   uint32_t dmaError = HAL_ETH_GetDMAError(&heth);
 
-writeline("ETH_Err: %d DMA_Err: %d ",errorCode, dmaError);
+  writeline("ETH_Err: %d DMA_Err: %d ", errorCode, dmaError);
 
   initarp();
 
-  	
-
-
-    HAL_Delay(3000);
-
-
-
-
-
+  HAL_Delay(3000);
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
-    HAL_TIM_Base_Start_IT(&htim6);
+  HAL_TIM_Base_Start_IT(&htim6);
   while (1)
   {
 	  console_process();
-
-
-
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -268,8 +256,7 @@ void SystemClock_Config(void)
   /** Initializes the CPU, AHB and APB buses clocks
   */
   RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
-                              |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2
-                              |RCC_CLOCKTYPE_D3PCLK1|RCC_CLOCKTYPE_D1PCLK1;
+                              |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
   RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
   RCC_ClkInitStruct.SYSCLKDivider = RCC_SYSCLK_DIV1;
   RCC_ClkInitStruct.AHBCLKDivider = RCC_HCLK_DIV2;
@@ -495,87 +482,57 @@ static void MX_GPIO_Init(void)
 /* USER CODE BEGIN 4 */
 void HAL_ETH_RxCpltCallback(ETH_HandleTypeDef *heth)
 {
+    uint32_t descidx = heth->RxDescList.RxDescIdx;
+    ETH_DMADescTypeDef *dmarxdesc = &DMARxDscrTab[descidx];
 
+    while ((dmarxdesc->DESC3 & 0x80000000) == 0)
+    {
+    	ETHFrame *Frame = (ETHFrame *)&RXbuffer[descidx][0];
 
+    	inf[descidx].eth_pointer = Frame;
+    	inf[descidx].parsed_offset = sizeof(ETHFrame);
 
-	    uint32_t descidx = heth->RxDescList.RxDescIdx;
-	    ETH_DMADescTypeDef *dmarxdesc = &DMARxDscrTab[descidx];
+    	switch(Frame->ETHtype)
+    	{
+    		case 0x0608:
+				arp(&RXbuffer[descidx][sizeof(ETHFrame)]);
+    		break;
 
+    		case htons(0x0800):
+				packetHandler(descidx);
+    		break;
 
+    		case htons(0x88CC):
+    		break;
 
-	    while ((dmarxdesc->DESC3 & 0x80000000) == 0)
-	    {
-	    	ETHFrame *Frame = (ETHFrame *)&RXbuffer[descidx][0];
+    		default:
+    			break;
+    	}
 
-	    	inf[descidx].eth_pointer = Frame;
-	    	inf[descidx].parsed_offset = sizeof(ETHFrame);
+		if(inf[descidx].bufflock == 0)
+		{
+            dmarxdesc->DESC3 = 0xC1000000;
+		}
 
-	    	switch(Frame->ETHtype)
-	    	{
-	    		case 0x0608:
+        descidx = (descidx + 1) % ETH_RX_DESC_CNT;
+        dmarxdesc = &DMARxDscrTab[descidx];
 
-					arp(&RXbuffer[descidx][sizeof(ETHFrame)]);
-	    		break;
+        heth->Instance->DMACRDTPR = (uint32_t)dmarxdesc;
+    }
 
-	    		case htons(0x0800):
-	    				packetHandler(descidx);
-	    		break;
-
-	    		case htons(0x88CC):
-
-	    		break;
-
-
-	    		default:
-	    			break;
-
-
-
-
-
-
-
-	    	}
-
-	    		if(inf[descidx].bufflock == 0)
-	    		{
-	        dmarxdesc->DESC3 = 0xC1000000;
-	    		}
-
-	        descidx = (descidx + 1) % ETH_RX_DESC_CNT;
-	        dmarxdesc = &DMARxDscrTab[descidx];
-
-
-	        heth->Instance->DMACRDTPR = (uint32_t)dmarxdesc;
-	    }
-
-
-	    heth->RxDescList.RxDescIdx = descidx;
-
+    heth->RxDescList.RxDescIdx = descidx;
 }
 
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
-
-
 	if (htim->Instance == TIM6)
-	    {
+    {
         tim6time += 1;
-
-			TCP_retrans();
-	        TCP_clean_table();
-
-
-
-
-	    }
-
-
-
-
+        arp_aging();
+		TCP_retrans();
+        TCP_clean_table();
+    }
 }
-
-
 
 bufferinf tcp_buff_lock[ETH_TX_DESC_CNT];
 static int8_t NextBuff = 0;
@@ -602,12 +559,9 @@ uint8_t GetTxBuff(void)
     }
 }
 
-
-
 void Transmit(uint16_t len, uint8_t TXBuffIndex)
 {
     static ETH_BufferTypeDef tx_buffer;
-
 
     tx_buffer.buffer = TXbuffer[TXBuffIndex];
     tx_buffer.len = len;
@@ -616,21 +570,14 @@ void Transmit(uint16_t len, uint8_t TXBuffIndex)
     TxConfig.Length = len;
     TxConfig.TxBuffer = &tx_buffer;
 
-
-     HAL_ETH_Transmit_IT(&heth, &TxConfig);
+    HAL_ETH_Transmit_IT(&heth, &TxConfig);
 }
 
-
-void PTP_Init(void) {
-
+void PTP_Init(void)
+{
     heth.Instance->MACTSCR = ETH_MACTSCR_TSENA | ETH_MACTSCR_TSENALL | ETH_MACTSCR_TSCTRLSSR;
-
-
     heth.Instance->MACSSIR = (4 << 16);
-
-
     heth.Instance->MACTSAR = 0xFFFFFFFF;
-
 
     heth.Instance->MACTSCR |= ETH_MACTSCR_TSADDREG;
     while((heth.Instance->MACTSCR & ETH_MACTSCR_TSADDREG) == ETH_MACTSCR_TSADDREG);
@@ -638,20 +585,17 @@ void PTP_Init(void) {
     heth.Instance->MACSTSUR = 0;
     heth.Instance->MACSTNUR = 0;
 
-
     heth.Instance->MACTSCR |= ETH_MACTSCR_TSINIT;
     while((heth.Instance->MACTSCR & ETH_MACTSCR_TSINIT) == ETH_MACTSCR_TSINIT);
 }
 
-PTP_Time Get_MAC_Time(void) {
+PTP_Time Get_MAC_Time(void)
+{
     PTP_Time t;
-
     t.seconds = heth.Instance->MACSTSR;
     t.nanoseconds = heth.Instance->MACSTNR;
     return t;
 }
-
-
 /* USER CODE END 4 */
 
  /* MPU Configuration */
@@ -690,10 +634,7 @@ void MPU_Config(void)
 void Error_Handler(void)
 {
   /* USER CODE BEGIN Error_Handler_Debug */
-writeline("Unexpected erorr has occured (Error_Handler)");
-
-
-
+  writeline("Unexpected erorr has occured (Error_Handler)");
   /* User can add his own implementation to report the HAL error return state */
   __disable_irq();
   while (1)
@@ -712,8 +653,6 @@ writeline("Unexpected erorr has occured (Error_Handler)");
 void assert_failed(uint8_t *file, uint32_t line)
 {
   /* USER CODE BEGIN 6 */
-  /* User can add his own implementation to report the file name and line number,
-     ex: printf("Wrong parameters value: file %s on line %d\r\n", file, line) */
   /* USER CODE END 6 */
 }
 #endif /* USE_FULL_ASSERT */
