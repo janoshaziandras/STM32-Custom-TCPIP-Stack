@@ -1,11 +1,13 @@
 #include "headers.h"
 #include "main.h"
 
-#define ARP_TABLE_SIZE 10
-#define ARP_AGING_TIMEOUT_SEC 300
+#include <string.h>
 
-arprec arptable[ARP_TABLE_SIZE];
+arprec arptable[APP_ARP_CACHE_CAPACITY] APP_AXI_SRAM;
 arpheader arpbase;
+
+static uint8_t getmac_impl(ipv4 ip, MAC_Addr_t *out_mac);
+static void arp_aging_impl(void);
 
 void initarp()
 {
@@ -46,7 +48,7 @@ void handletable(arpheader *arphead)
     bool recordExist = 0;
     int16_t FirstEmpty = -1;
 
-    for(int i = 0; i < ARP_TABLE_SIZE; i++)
+    for(int i = 0; i < APP_ARP_CACHE_CAPACITY; i++)
     {
         if(arptable[i].state != 0)
         {
@@ -122,9 +124,17 @@ void arpreqvest(ipv4 ipv4add)
 
 uint8_t getmac(ipv4 ip, MAC_Addr_t *out_mac)
 {
+    uint32_t dwt_start = DWT_START();
+    uint8_t result = getmac_impl(ip, out_mac);
+    DWT_Record(DWT_METRIC_ARP_LOOKUP, DWT_STOP(dwt_start));
+    return result;
+}
+
+static uint8_t getmac_impl(ipv4 ip, MAC_Addr_t *out_mac)
+{
     static uint32_t last_arp_request_time = 0;
 
-    for(int i = 0; i < ARP_TABLE_SIZE; i++)
+    for(int i = 0; i < APP_ARP_CACHE_CAPACITY; i++)
     {
         if(arptable[i].state != 0 && memcmp(arptable[i].ipadd.addr, ip.addr, 4) == 0)
         {
@@ -133,7 +143,7 @@ uint8_t getmac(ipv4 ip, MAC_Addr_t *out_mac)
         }
     }
 
-    if ((tim6time - last_arp_request_time) > 5)
+    if ((tim6time - last_arp_request_time) > APP_ARP_REQUEST_INTERVAL_TICKS)
     {
         arpreqvest(ip);
         last_arp_request_time = tim6time;
@@ -144,13 +154,20 @@ uint8_t getmac(ipv4 ip, MAC_Addr_t *out_mac)
 
 void arp_aging(void)
 {
-    for(int i = 0; i < ARP_TABLE_SIZE; i++)
+    uint32_t dwt_start = DWT_START();
+    arp_aging_impl();
+    DWT_Record(DWT_METRIC_ARP_AGING, DWT_STOP(dwt_start));
+}
+
+static void arp_aging_impl(void)
+{
+    for(int i = 0; i < APP_ARP_CACHE_CAPACITY; i++)
     {
         if(arptable[i].state != 0)
         {
-            if((tim6time - arptable[i].last_seen) > ARP_AGING_TIMEOUT_SEC)
+            if((tim6time - arptable[i].last_seen) > APP_ARP_AGING_TIMEOUT_TICKS)
             {
-                arptable[i].state = 0;
+                memset(&arptable[i], 0, sizeof(arptable[i]));
             }
         }
     }

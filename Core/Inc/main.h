@@ -32,6 +32,7 @@ extern "C" {
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include <stdbool.h>
+#include "app_config.h"
 
 /* USER CODE END Includes */
 
@@ -40,7 +41,7 @@ extern "C" {
 extern ETH_HandleTypeDef heth;
 extern UART_HandleTypeDef huart3;
 extern ETH_TxPacketConfig TxConfig;
-extern uint8_t TXbuffer[ETH_TX_DESC_CNT][1536];
+extern uint8_t TXbuffer[ETH_TX_DESC_CNT][APP_ETH_TX_BUFFER_SIZE];
 extern ETH_DMADescTypeDef DMATxDscrTab[ETH_TX_DESC_CNT];
 extern uint8_t GetTxBuff();
 extern void Transmit(uint16_t len, uint8_t TXBuffIndex);

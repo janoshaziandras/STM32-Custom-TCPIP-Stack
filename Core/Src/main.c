@@ -59,24 +59,29 @@ ETH_DMADescTypeDef DMARxDscrTab[ETH_RX_DESC_CNT] __attribute__((section(".RxDesc
 ETH_DMADescTypeDef DMATxDscrTab[ETH_TX_DESC_CNT] __attribute__((section(".TxDescripSection")));   /* Ethernet Tx DMA Descriptors */
 #endif
 
-ETH_TxPacketConfig TxConfig;
+ETH_TxPacketConfig TxConfig APP_DTCM_BSS;
 
-ETH_HandleTypeDef heth;
+ETH_HandleTypeDef heth APP_DTCM_BSS;
 
 RNG_HandleTypeDef hrng;
 
-TIM_HandleTypeDef htim6;
+TIM_HandleTypeDef htim6 APP_DTCM_BSS;
 
-UART_HandleTypeDef huart3;
-DMA_HandleTypeDef hdma_usart3_tx;
-DMA_HandleTypeDef hdma_usart3_rx;
+UART_HandleTypeDef huart3 APP_DTCM_BSS;
+DMA_HandleTypeDef hdma_usart3_tx APP_DTCM_BSS;
+DMA_HandleTypeDef hdma_usart3_rx APP_DTCM_BSS;
 
 /* USER CODE BEGIN PV */
-uint8_t RXbuffer[ETH_RX_DESC_CNT][1536] __attribute__((aligned(32))) __attribute__((section(".RxBufferSection")));
-uint8_t TXbuffer[ETH_TX_DESC_CNT][1536] __attribute__((aligned(32))) __attribute__((section(".TxBufferSection")));
-packetinf inf[ETH_RX_DESC_CNT];
+uint8_t RXbuffer[ETH_RX_DESC_CNT][APP_ETH_RX_BUFFER_SIZE] __attribute__((aligned(32))) __attribute__((section(".RxBufferSection")));
+uint8_t TXbuffer[ETH_TX_DESC_CNT][APP_ETH_TX_BUFFER_SIZE] __attribute__((aligned(32))) __attribute__((section(".TxBufferSection")));
+packetinf inf[ETH_RX_DESC_CNT] APP_DTCM_BSS;
 tempips tempss;
-uint32_t tim6time = 0;
+uint32_t tim6time APP_DTCM_BSS = 0;
+volatile uint32_t dwt_measurements[DWT_METRIC_COUNT][DWT_SAMPLE_CAPACITY] APP_DWT_BSS;
+volatile uint16_t dwt_measurement_counts[DWT_METRIC_COUNT] APP_DWT_BSS;
+volatile uint32_t dwt_measurement_dropped[DWT_METRIC_COUNT] APP_DWT_BSS;
+volatile uint32_t dwt_packet_dropped APP_DWT_BSS;
+_Static_assert(DWT_METRIC_COUNT == APP_DWT_CHANNELS, "DWT channel count mismatch");
 
 
 
@@ -113,7 +118,7 @@ int main(void)
 
   /* USER CODE BEGIN 1 */
 	tempss = (tempips){
-	    .IPv4_add = { .addr = {192, 168, 1, 4} },
+      .IPv4_add = { .addr = APP_DEVICE_IPV4_ADDRESS },
 
 	};
   /* USER CODE END 1 */
@@ -140,6 +145,7 @@ int main(void)
 
   /* Configure the system clock */
   SystemClock_Config();
+  DWT_Init();
 
   /* USER CODE BEGIN SysInit */
 
@@ -151,11 +157,10 @@ int main(void)
   MX_ETH_Init();
   MX_USART3_UART_Init();
   MX_RNG_Init();
+  TCP_Init();
   MX_TIM6_Init();
   /* USER CODE BEGIN 2 */
   memset(DMARxDscrTab, 0, sizeof(DMARxDscrTab));
-
-  writeline("UART OK");
 
   for(int i = 0; i < ETH_RX_DESC_CNT; i++)
   {
@@ -173,38 +178,53 @@ int main(void)
       DMATxDscrTab[i].DESC3 = 0;
   }
 
+  uint8_t startup_ok = 1;
+  ETH_MACFilterConfigTypeDef FilterConf = {0};
+  FilterConf.PromiscuousMode = 1;
+  FilterConf.BroadcastFilter = 0;
+  FilterConf.PassAllMulticast = 1;
+  if (HAL_ETH_SetMACFilterConfig(&heth, &FilterConf) != HAL_OK)
+  {
+      startup_ok = 0;
+  }
+
+  HAL_NVIC_SetPriority(ETH_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(ETH_IRQn);
+
   if (HAL_ETH_Start_IT(&heth) != HAL_OK)
   {
-      writeline("ETH_erorr");
+      startup_ok = 0;
   }
   else
   {
-      writeline("ETH_STARTED_SUCESSFULLY");
-      PTP_Init();
+      uint32_t errorCode = HAL_ETH_GetError(&heth);
+      uint32_t dmaError = HAL_ETH_GetDMAError(&heth);
+      if (errorCode != 0 || dmaError != 0)
+      {
+        startup_ok = 0;
+      }
   }
-
-  ETH_MACFilterConfigTypeDef FilterConf;
-  FilterConf.PromiscuousMode = 0;
-  FilterConf.BroadcastFilter = 0;
-  FilterConf.PassAllMulticast = 1;
-  HAL_ETH_SetMACFilterConfig(&heth, &FilterConf);
-
-  uint32_t errorCode = HAL_ETH_GetError(&heth);
-  uint32_t dmaError = HAL_ETH_GetDMAError(&heth);
-
-  writeline("ETH_Err: %d DMA_Err: %d ", errorCode, dmaError);
 
   initarp();
 
-  HAL_Delay(3000);
+  HAL_Delay(APP_STARTUP_DELAY_MS);
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
-  HAL_TIM_Base_Start_IT(&htim6);
+    if (HAL_TIM_Base_Start_IT(&htim6) != HAL_OK)
+    {
+      startup_ok = 0;
+    }
+    if (startup_ok)
+    {
+      writeline("Startup complete: all peripherals initialized");
+    }
   while (1)
   {
 	  console_process();
+
+
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -283,23 +303,18 @@ static void MX_ETH_Init(void)
 
   /* USER CODE END ETH_Init 0 */
 
-   static uint8_t MACAddr[6];
+  static uint8_t MACAddr[6] = APP_DEVICE_MAC_ADDRESS;
 
   /* USER CODE BEGIN ETH_Init 1 */
 
   /* USER CODE END ETH_Init 1 */
   heth.Instance = ETH;
-  MACAddr[0] = 0x00;
-  MACAddr[1] = 0x80;
-  MACAddr[2] = 0xE1;
-  MACAddr[3] = 0x00;
-  MACAddr[4] = 0x00;
-  MACAddr[5] = 0x00;
-  heth.Init.MACAddr = &MACAddr[0];
+  heth.Init.MACAddr = MACAddr;
   heth.Init.MediaInterface = HAL_ETH_RMII_MODE;
   heth.Init.TxDesc = DMATxDscrTab;
   heth.Init.RxDesc = DMARxDscrTab;
-  heth.Init.RxBuffLen = 1536;
+  heth.Init.RxBuffLen = APP_ETH_RX_BUFFER_SIZE;
+
 
   /* USER CODE BEGIN MACADDRESS */
 
@@ -433,7 +448,7 @@ static void MX_USART3_UART_Init(void)
   }
   /* USER CODE BEGIN USART3_Init 2 */
 
-  /* USER CODE END USART3_Init 2 */
+  /* USER CODE END USART3_Init 2 */06.10. - 09
 
 }
 
@@ -468,7 +483,7 @@ static void MX_GPIO_Init(void)
   /* USER CODE END MX_GPIO_Init_1 */
 
   /* GPIO Ports Clock Enable */
-  __HAL_RCC_GPIOC_CLK_ENABLE();
+  __HAL_RCC_GPIOC_CLK_ENABLE();06.10. - 09
   __HAL_RCC_GPIOA_CLK_ENABLE();
   __HAL_RCC_GPIOB_CLK_ENABLE();
   __HAL_RCC_GPIOD_CLK_ENABLE();
@@ -480,6 +495,37 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
+void DWT_Init(void)
+{
+  for (unsigned int metric = 0; metric < DWT_METRIC_COUNT; metric++) {
+    dwt_measurement_counts[metric] = 0;
+    dwt_measurement_dropped[metric] = 0;
+    for (unsigned int sample = 0; sample < DWT_SAMPLE_CAPACITY; sample++) {
+      dwt_measurements[metric][sample] = 0;
+    }
+  }
+  dwt_packet_dropped = 0;
+  CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+  DWT->CYCCNT = 0;
+  DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
+}
+
+void DWT_Record(DwtMetric metric, uint32_t cycles)
+{
+  if ((unsigned int)metric >= DWT_METRIC_COUNT) {
+    return;
+  }
+
+  uint16_t count = dwt_measurement_counts[metric];
+  if (count < DWT_SAMPLE_CAPACITY) {
+    dwt_measurements[metric][count] = cycles;
+    dwt_measurement_counts[metric] = count + 1;
+  } else {
+    dwt_measurements[metric][DWT_SAMPLE_CAPACITY - 1] = cycles;
+    dwt_measurement_dropped[metric]++;
+  }
+}
+
 void HAL_ETH_RxCpltCallback(ETH_HandleTypeDef *heth)
 {
     uint32_t descidx = heth->RxDescList.RxDescIdx;
@@ -487,41 +533,62 @@ void HAL_ETH_RxCpltCallback(ETH_HandleTypeDef *heth)
 
     while ((dmarxdesc->DESC3 & 0x80000000) == 0)
     {
-    	ETHFrame *Frame = (ETHFrame *)&RXbuffer[descidx][0];
 
-    	inf[descidx].eth_pointer = Frame;
-    	inf[descidx].parsed_offset = sizeof(ETHFrame);
 
-    	switch(Frame->ETHtype)
-    	{
-    		case 0x0608:
-				arp(&RXbuffer[descidx][sizeof(ETHFrame)]);
-    		break;
+      uint32_t rx_status = dmarxdesc->DESC3;
+      __DMB();
+      uint16_t rx_length = rx_status & ETH_DMARXNDESCWBF_PL;
+      ETHFrame *Frame = (ETHFrame *)&RXbuffer[descidx][0];
 
-    		case htons(0x0800):
-				packetHandler(descidx);
-    		break;
 
-    		case htons(0x88CC):
-    		break;
 
-    		default:
-    			break;
-    	}
+
+
+
+      inf[descidx].eth_pointer = Frame;
+      inf[descidx].parsed_offset = sizeof(ETHFrame);
+      inf[descidx].frame_length = rx_length;
+
+      if ((rx_status & (ETH_DMARXNDESCWBF_FD | ETH_DMARXNDESCWBF_LD)) ==
+          (ETH_DMARXNDESCWBF_FD | ETH_DMARXNDESCWBF_LD) &&
+          rx_length >= sizeof(ETHFrame) && rx_length <= APP_ETH_RX_BUFFER_SIZE) {
+        uint32_t dwt_start = DWT_START();
+        switch(htons(Frame->ETHtype))
+        {
+          case 0x0806:
+            if (rx_length >= sizeof(ETHFrame) + sizeof(arpheader)) {
+              arp(&RXbuffer[descidx][sizeof(ETHFrame)]);
+            }
+            break;
+
+          case 0x0800:
+            packetHandler(descidx);
+            break;
+
+          case 0x88CC:
+            break;
+
+          default:
+            break;
+        }
+        DWT_Record(DWT_METRIC_PACKET_TRANSACTION, DWT_STOP(dwt_start));
+      }
 
 		if(inf[descidx].bufflock == 0)
 		{
+    __DMB();
             dmarxdesc->DESC3 = 0xC1000000;
+    __DMB();
+    heth->Instance->DMACRDTPR = (uint32_t)dmarxdesc;
 		}
 
         descidx = (descidx + 1) % ETH_RX_DESC_CNT;
         dmarxdesc = &DMARxDscrTab[descidx];
-
-        heth->Instance->DMACRDTPR = (uint32_t)dmarxdesc;
     }
 
     heth->RxDescList.RxDescIdx = descidx;
 }
+
 
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
@@ -529,15 +596,17 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
     {
         tim6time += 1;
         arp_aging();
+        mac_table_aging();
+        topology_aging();
 		TCP_retrans();
         TCP_clean_table();
     }
 }
 
-bufferinf tcp_buff_lock[ETH_TX_DESC_CNT];
+bufferinf tcp_buff_lock[ETH_TX_DESC_CNT] APP_DTCM_BSS;
 static int8_t NextBuff = 0;
 
-uint8_t GetTxBuff(void)
+static uint8_t GetTxBuff_impl(void)
 {
     uint8_t Sindex = NextBuff;
 
@@ -559,8 +628,17 @@ uint8_t GetTxBuff(void)
     }
 }
 
+uint8_t GetTxBuff(void)
+{
+  uint32_t dwt_start = DWT_START();
+  uint8_t index = GetTxBuff_impl();
+  DWT_Record(DWT_METRIC_TX_BUFFER_SEARCH, DWT_STOP(dwt_start));
+  return index;
+}
+
 void Transmit(uint16_t len, uint8_t TXBuffIndex)
 {
+  uint32_t dwt_start = DWT_START();
     static ETH_BufferTypeDef tx_buffer;
 
     tx_buffer.buffer = TXbuffer[TXBuffIndex];
@@ -569,33 +647,20 @@ void Transmit(uint16_t len, uint8_t TXBuffIndex)
 
     TxConfig.Length = len;
     TxConfig.TxBuffer = &tx_buffer;
+    TxConfig.pData = TXbuffer[TXBuffIndex];
 
-    HAL_ETH_Transmit_IT(&heth, &TxConfig);
+    if (HAL_ETH_Transmit_IT(&heth, &TxConfig) != HAL_OK) {
+      tcp_buff_lock[TXBuffIndex].is_locked = 0;
+      tcp_buff_lock[TXBuffIndex].retry_count = 0;
+    }
+  DWT_Record(DWT_METRIC_TX_START, DWT_STOP(dwt_start));
 }
 
-void PTP_Init(void)
+void HAL_ETH_TxCpltCallback(ETH_HandleTypeDef *heth)
 {
-    heth.Instance->MACTSCR = ETH_MACTSCR_TSENA | ETH_MACTSCR_TSENALL | ETH_MACTSCR_TSCTRLSSR;
-    heth.Instance->MACSSIR = (4 << 16);
-    heth.Instance->MACTSAR = 0xFFFFFFFF;
-
-    heth.Instance->MACTSCR |= ETH_MACTSCR_TSADDREG;
-    while((heth.Instance->MACTSCR & ETH_MACTSCR_TSADDREG) == ETH_MACTSCR_TSADDREG);
-
-    heth.Instance->MACSTSUR = 0;
-    heth.Instance->MACSTNUR = 0;
-
-    heth.Instance->MACTSCR |= ETH_MACTSCR_TSINIT;
-    while((heth.Instance->MACTSCR & ETH_MACTSCR_TSINIT) == ETH_MACTSCR_TSINIT);
+    HAL_ETH_ReleaseTxPacket(heth);
 }
 
-PTP_Time Get_MAC_Time(void)
-{
-    PTP_Time t;
-    t.seconds = heth.Instance->MACSTSR;
-    t.nanoseconds = heth.Instance->MACSTNR;
-    return t;
-}
 /* USER CODE END 4 */
 
  /* MPU Configuration */
@@ -634,7 +699,6 @@ void MPU_Config(void)
 void Error_Handler(void)
 {
   /* USER CODE BEGIN Error_Handler_Debug */
-  writeline("Unexpected erorr has occured (Error_Handler)");
   /* User can add his own implementation to report the HAL error return state */
   __disable_irq();
   while (1)

@@ -1,21 +1,27 @@
 #include "headers.h"
 #include "main.h"
 
-#define max_ports 64
-opf_mac_table_entry ports[max_ports];
+#include <string.h>
 
-uint8_t sendhello(uint8_t index);
-uint8_t OPFsendreply(uint8_t index, ofp_header *ofp);
-uint8_t ProcessFT_reply(ofp_header *opf, uint8_t index);
+opf_mac_table_entry ports[APP_SWITCH_CAPACITY][APP_SWITCH_PORT_CAPACITY] APP_AXI_SRAM;
+static uint32_t mac_table_last_seen[MAC_TABLE_SIZE] APP_AXI_SRAM;
+static uint32_t topology_last_seen[MAX_SWITCHES][APP_SWITCH_PORT_CAPACITY] APP_AXI_SRAM;
+
+uint8_t sendhello(uint8_t index, ofp_header *request);
+uint8_t send_features_reply(uint8_t index, ofp_header *request);
+uint8_t OPFsendreply(uint8_t index, ofp_header *ofp, uint16_t message_length);
 uint8_t Sendmultireq(uint8_t index, ofp_header *ofp);
 uint8_t process_multipart(uint8_t index, ofp_header *ofp);
 uint8_t process_port_status(ofp_header *opf, uint8_t index);
-uint8_t process_packet_in(uint8_t index, ofp_header *opf);
+uint8_t process_packet_in(uint8_t index, ofp_header *opf, uint16_t message_length);
 uint8_t send_packet_out(uint8_t index, uint32_t xid, uint32_t buffer_id, uint32_t in_port, uint32_t action_port, uint8_t *raw_frame, uint16_t frame_len);
 uint8_t send_flow_mod(uint8_t index, uint8_t *dest_mac, uint32_t out_port);
+static void opf_dispatch_message(uint8_t index, uint8_t *message, uint16_t message_length);
+static uint8_t openflow_rx_buffer[APP_TCP_CONNECTION_CAPACITY][APP_OPENFLOW_RX_BUFFER_SIZE] APP_AXI_SRAM;
+static uint16_t openflow_rx_length[APP_TCP_CONNECTION_CAPACITY] APP_AXI_SRAM;
 
-fdb_entry_t mac_table[MAC_TABLE_SIZE];
-switch_topology_t topology[MAX_SWITCHES];
+fdb_entry_t mac_table[MAC_TABLE_SIZE] APP_AXI_SRAM;
+switch_topology_t topology[MAX_SWITCHES] APP_AXI_SRAM;
 
 typedef struct {
     ETHFrame eth;
@@ -37,7 +43,10 @@ static void GenArpreply(arpheader *arp, MAC_Addr_t target_mac, ipv4 tgip, ipv4 s
 
 uint32_t get_port_to_neighbor(uint8_t current_sw, uint8_t next_sw)
 {
-    for (int p = 0; p < 64; p++) {
+    if (current_sw >= APP_SWITCH_CAPACITY || next_sw >= APP_SWITCH_CAPACITY) {
+        return 0xFFFFFFFF;
+    }
+    for (int p = 0; p < APP_SWITCH_PORT_CAPACITY; p++) {
         if (topology[current_sw].links[p].active == 1 &&
             topology[current_sw].links[p].neighbor_switch_idx == next_sw) {
             return p;
@@ -46,20 +55,11 @@ uint32_t get_port_to_neighbor(uint8_t current_sw, uint8_t next_sw)
     return 0xFFFFFFFF;
 }
 
-uint8_t get_conn_idx_by_tti(uint8_t target_tti)
-{
-    for (int i = 0; i < 8; i++) {
-        if (inf[i].tti == target_tti) {
-            return i;
-        }
-    }
-    return 255;
-}
-
-#define MAX_PATH_LEN 16
-
 uint8_t find_shortest_path(uint8_t start_sw, uint8_t target_sw, uint8_t *path_out)
 {
+    if (start_sw >= APP_SWITCH_CAPACITY || target_sw >= APP_SWITCH_CAPACITY || path_out == NULL) {
+        return 0;
+    }
     if (start_sw == target_sw) {
         path_out[0] = start_sw;
         return 1;
@@ -84,9 +84,12 @@ uint8_t find_shortest_path(uint8_t start_sw, uint8_t target_sw, uint8_t *path_ou
             break;
         }
 
-        for (int p = 0; p < 64; p++) {
+        for (int p = 0; p < APP_SWITCH_PORT_CAPACITY; p++) {
             if (topology[curr].links[p].active == 1) {
                 uint8_t neighbor = topology[curr].links[p].neighbor_switch_idx;
+                if (neighbor >= APP_SWITCH_CAPACITY) {
+                    continue;
+                }
                 if (!visited[neighbor]) {
                     visited[neighbor] = 1;
                     parent[neighbor] = curr;
@@ -98,11 +101,11 @@ uint8_t find_shortest_path(uint8_t start_sw, uint8_t target_sw, uint8_t *path_ou
 
     if (!found) return 0;
 
-    uint8_t temp_path[MAX_PATH_LEN];
+    uint8_t temp_path[APP_MAX_PATH_LENGTH];
     uint8_t path_len = 0;
     uint8_t curr = target_sw;
 
-    while (curr != 255 && path_len < MAX_PATH_LEN) {
+    while (curr != 255 && path_len < APP_MAX_PATH_LENGTH) {
         temp_path[path_len++] = curr;
         curr = parent[curr];
     }
@@ -114,43 +117,93 @@ uint8_t find_shortest_path(uint8_t start_sw, uint8_t target_sw, uint8_t *path_ou
     return path_len;
 }
 
-void opf_handler(uint8_t index)
+uint8_t opf_stream_receive(uint8_t index, const uint8_t *data, uint16_t length)
 {
-    ofp_header *opf = (ofp_header *)&RXbuffer[index][inf[index].parsed_offset];
-    inf[index].parsed_offset += sizeof(ofp_header);
+    if (index >= ETH_RX_DESC_CNT || data == NULL) {
+        return 0;
+    }
+    uint8_t connection = inf[index].tti;
+    if (connection >= APP_TCP_CONNECTION_CAPACITY) {
+        return 0;
+    }
+    if (openflow_rx_length[connection] > APP_OPENFLOW_RX_BUFFER_SIZE ||
+        length > APP_OPENFLOW_RX_BUFFER_SIZE - openflow_rx_length[connection]) {
+        dwt_packet_dropped++;
+        return 0;
+    }
 
-    uint8_t type = opf->type;
-    uint16_t len = htons(opf->length);
-    uint32_t xid = htonl(opf->xid);
+    uint8_t *stream = openflow_rx_buffer[connection];
+    uint16_t *stream_length = &openflow_rx_length[connection];
+    memcpy(&stream[*stream_length], data, length);
+    *stream_length += length;
 
+    while (*stream_length >= sizeof(ofp_header)) {
+        uint32_t parse_start = DWT_START();
+        ofp_header *header = (ofp_header *)stream;
+        uint16_t message_length = htons(header->length);
+        if (header->version != 0x04U || message_length < sizeof(ofp_header) ||
+            message_length > APP_OPENFLOW_RX_BUFFER_SIZE) {
+            *stream_length = 0;
+            return 0;
+        }
+        DWT_Record(DWT_METRIC_OPENFLOW_PARSE, DWT_STOP(parse_start));
+        if (*stream_length < message_length) {
+            break;
+        }
 
+        uint32_t dwt_start = DWT_START();
+        opf_dispatch_message(index, stream, message_length);
+        DWT_Record(DWT_METRIC_OPENFLOW_HANDLER, DWT_STOP(dwt_start));
 
-    switch (type)
+        *stream_length -= message_length;
+        if (*stream_length != 0) {
+            memmove(stream, &stream[message_length], *stream_length);
+        }
+    }
+    return 1;
+}
+
+uint16_t opf_stream_window(uint8_t connection)
+{
+    if (connection >= APP_TCP_CONNECTION_CAPACITY ||
+        openflow_rx_length[connection] >= APP_OPENFLOW_RX_BUFFER_SIZE) {
+        return 0;
+    }
+    return APP_OPENFLOW_RX_BUFFER_SIZE - openflow_rx_length[connection];
+}
+
+static void opf_dispatch_message(uint8_t index, uint8_t *message, uint16_t message_length)
+{
+    ofp_header *opf = (ofp_header *)message;
+    switch (opf->type)
     {
     case 0:
-
-        sendhello(index);
+        sendhello(index, opf);
         break;
     case 2:
-
-        OPFsendreply(index, opf);
+        OPFsendreply(index, opf, message_length);
         break;
+    case 5:
+            if (message_length < sizeof(ofp_header)) {
+                break;
+            }
+            if (send_features_reply(index, opf) == 0) {
+                Sendmultireq(index, opf);
+            }
+            break;
     case 6:
-
-        ProcessFT_reply(opf, index);
-        Sendmultireq(index, opf);
         break;
     case 19:
 
         process_multipart(index, opf);
         break;
     case 12:
-
-        process_port_status(opf, index);
+        if (message_length >= sizeof(ofp_header) + sizeof(ofp_port_status)) {
+            process_port_status(opf, index);
+        }
         break;
     case 10:
-
-        process_packet_in(index, opf);
+        process_packet_in(index, opf, message_length);
         break;
     default:
 
@@ -158,38 +211,60 @@ void opf_handler(uint8_t index)
     }
 }
 
-uint8_t process_lldp_packet(uint8_t index, ofp_header *opf, uint8_t *raw_ethernet_frame, uint32_t rx_port)
+uint8_t process_lldp_packet(uint8_t index, ofp_header *opf, uint8_t *raw_ethernet_frame,
+                            uint32_t rx_port, uint16_t frame_length)
 {
+    (void)opf;
     uint8_t local_switch = inf[index].tti;
-    uint32_t local_port = rx_port;
+    uint32_t remote_switch = UINT32_MAX;
+    uint32_t remote_port = UINT32_MAX;
 
-    uint8_t *tlv = raw_ethernet_frame + sizeof(ETHFrame);
-    uint8_t remote_switch = 255;
-    uint32_t remote_port = 0;
-
-    uint16_t tlv_type = (htons(*(uint16_t*)tlv) >> 9) & 0x7F;
-    uint16_t tlv_len = htons(*(uint16_t*)tlv) & 0x01FF;
-    if (tlv_type == 1 && tlv[2] == 0x07) {
-        remote_switch = htonl(*(uint32_t*)(tlv + 3));
-    }
-    tlv += 2 + tlv_len;
-
-    tlv_type = (htons(*(uint16_t*)tlv) >> 9) & 0x7F;
-    tlv_len = htons(*(uint16_t*)tlv) & 0x01FF;
-    if (tlv_type == 2 && tlv[2] == 0x07) {
-        remote_port = htonl(*(uint32_t*)(tlv + 3));
+    if (local_switch >= APP_SWITCH_CAPACITY || rx_port >= APP_SWITCH_PORT_CAPACITY ||
+        frame_length < sizeof(ETHFrame) + 2U) {
+        return 255;
     }
 
-    if (remote_switch != 255) {
+    uint8_t *cursor = raw_ethernet_frame + sizeof(ETHFrame);
+    uint16_t remaining = frame_length - sizeof(ETHFrame);
+    while (remaining >= 2U) {
+        uint16_t raw_header;
+        memcpy(&raw_header, cursor, sizeof(raw_header));
+        uint16_t header = htons(raw_header);
+        uint16_t tlv_type = header >> 9;
+        uint16_t tlv_length = header & 0x01FFU;
+        if (tlv_length > remaining - 2U) {
+            return 255;
+        }
+        if (tlv_type == 0U) {
+            break;
+        }
 
-        topology[local_switch].links[local_port].active = 1;
-        topology[local_switch].links[local_port].neighbor_switch_idx = remote_switch;
-        topology[local_switch].links[local_port].neighbor_port = remote_port;
+        if ((tlv_type == 1U || tlv_type == 2U) && tlv_length == 5U && cursor[2] == 0x07U) {
+            uint32_t identifier;
+            memcpy(&identifier, cursor + 3U, sizeof(identifier));
+            if (tlv_type == 1U) {
+                remote_switch = htonl(identifier);
+            } else {
+                remote_port = htonl(identifier);
+            }
+        }
 
-        topology[remote_switch].links[remote_port].active = 1;
-        topology[remote_switch].links[remote_port].neighbor_switch_idx = local_switch;
-        topology[remote_switch].links[remote_port].neighbor_port = local_port;
+        cursor += 2U + tlv_length;
+        remaining -= 2U + tlv_length;
     }
+
+    if (remote_switch >= APP_SWITCH_CAPACITY || remote_port >= APP_SWITCH_PORT_CAPACITY) {
+        return 255;
+    }
+
+    topology[local_switch].links[rx_port].active = 1;
+    topology[local_switch].links[rx_port].neighbor_switch_idx = remote_switch;
+    topology[local_switch].links[rx_port].neighbor_port = remote_port;
+    topology_last_seen[local_switch][rx_port] = tim6time;
+    topology[remote_switch].links[remote_port].active = 1;
+    topology[remote_switch].links[remote_port].neighbor_switch_idx = local_switch;
+    topology[remote_switch].links[remote_port].neighbor_port = rx_port;
+    topology_last_seen[remote_switch][remote_port] = tim6time;
     return 0;
 }
 
@@ -228,7 +303,7 @@ uint8_t send_lldp_packet_out(uint8_t index, uint32_t src_port)
     tx_tcp->seqNumber     = htonl(tcptable[tti].local_seq_sent);
     tx_tcp->ackNumber     = htonl(tcptable[tti].remote_seq_expected);
     tx_tcp->urgentPointer = 0;
-    tx_tcp->windowSize    = htons(24000);
+    tx_tcp->windowSize    = htons(APP_TCP_WINDOW_SIZE);
     tx_tcp->checksum      = 0;
 
     uint8_t *ofp_ptr           = tx_ptr + sizeof(ETHFrame) + sizeof(IPv4header) + sizeof(TCP);
@@ -296,7 +371,6 @@ uint8_t send_lldp_packet_out(uint8_t index, uint32_t src_port)
 
 
     Transmit(tcp_buff_lock[buf_idx].data_len, buf_idx);
-    HAL_Delay(10);
     tcp_buff_lock[buf_idx].sent_time   = tim6time + 2;
 
     return 0;
@@ -304,8 +378,14 @@ uint8_t send_lldp_packet_out(uint8_t index, uint32_t src_port)
 
 uint8_t send_flow_mod(uint8_t tti, uint8_t *dest_mac, uint32_t out_port)
 {
+    if (tti >= APP_TCP_CONNECTION_CAPACITY || dest_mac == NULL) {
+        return 255;
+    }
     uint8_t buf_idx = GetTxBuff();
-    if(buf_idx == 255) return 255;
+    if(buf_idx == 255) {
+        dwt_packet_dropped++;
+        return 255;
+    }
 
     uint8_t *tx_ptr = TXbuffer[buf_idx];
 
@@ -313,6 +393,7 @@ uint8_t send_flow_mod(uint8_t tti, uint8_t *dest_mac, uint32_t out_port)
     uint8_t succ = getmac(tcptable[tti].remote_ip, &tx_eth->dest_add);
     if(succ == 0) return 255; 
 
+    uint32_t message_start = DWT_START();
     tx_eth->ETHtype = htons(0x0800);
     tx_eth->src_add = *(MAC_Addr_t *)heth.Init.MACAddr;
 
@@ -336,19 +417,20 @@ uint8_t send_flow_mod(uint8_t tti, uint8_t *dest_mac, uint32_t out_port)
     tx_tcp->seqNumber = htonl(tcptable[tti].local_seq_sent);
     tx_tcp->ackNumber = htonl(tcptable[tti].remote_seq_expected);
     tx_tcp->urgentPointer = 0;
-    tx_tcp->windowSize = htons(24000);
+    tx_tcp->windowSize = htons(APP_TCP_WINDOW_SIZE);
     tx_tcp->checksum = 0;
 
     uint8_t *ofp_ptr = tx_ptr + sizeof(ETHFrame) + sizeof(IPv4header) + sizeof(TCP);
     
     ofp_header *ofh = (ofp_header *)ofp_ptr;
-    ofp_flow_mod *fm = (ofp_flow_mod *)(ofp_ptr + 8);
-    ofp_match_header *match = (ofp_match_header *)(ofp_ptr + 48);
-    uint8_t *oxm = ofp_ptr + 52;
-    ofp_instruction_actions *inst = (ofp_instruction_actions *)(ofp_ptr + 64);
+    ofp_flow_mod *fm = (ofp_flow_mod *)(ofp_ptr + sizeof(ofp_header));
+    ofp_match_header *match = (ofp_match_header *)(ofp_ptr + sizeof(ofp_header) + sizeof(ofp_flow_mod));
+    uint8_t *oxm = (uint8_t *)(match + 1);
+    uint8_t *instruction_ptr = (uint8_t *)match + 12U;
+    ofp_instruction_actions *inst = (ofp_instruction_actions *)instruction_ptr;
     ofp_action_output *act_out = (ofp_action_output *)((uint8_t *)inst + 8);
 
-    uint16_t ofp_total_len = 88;
+    uint16_t ofp_total_len = 84;
 
     ofh->version = 0x04;
     ofh->type    = 14;
@@ -366,13 +448,12 @@ uint8_t send_flow_mod(uint8_t tti, uint8_t *dest_mac, uint32_t out_port)
     fm->out_group    = 0xFFFFFFFF;
 
     match->type   = htons(1);
-    match->length = htons(14);
+    match->length = htons(10);
     
     oxm[0] = 0x80; oxm[1] = 0x00;
     oxm[2] = 0x06;
     oxm[3] = 0x06;
     memcpy(&oxm[4], dest_mac, 6);
-    oxm[10] = 0; oxm[11] = 0;
 
     inst->type = htons(4);
     inst->len  = htons(24);
@@ -395,39 +476,71 @@ uint8_t send_flow_mod(uint8_t tti, uint8_t *dest_mac, uint32_t out_port)
 
 
 
+    DWT_Record(DWT_METRIC_MESSAGE_GENERATION, DWT_STOP(message_start));
     Transmit(tcp_buff_lock[buf_idx].data_len, buf_idx);
-    HAL_Delay(1);
     tcp_buff_lock[buf_idx].sent_time = tim6time + 2; 
 
     return 0;
 }
 
-uint8_t process_packet_in(uint8_t index, ofp_header *opf)
+uint8_t process_packet_in(uint8_t index, ofp_header *opf, uint16_t message_length)
 {
+    if (message_length < sizeof(ofp_header) + sizeof(ofp_packet_in_header) + sizeof(ofp_match_header)) {
+        return 255;
+    }
+    uint32_t extraction_start = DWT_START();
+
     ofp_packet_in_header *pin = (ofp_packet_in_header *)((uint8_t *)opf + sizeof(ofp_header));
     ofp_match_header *match = (ofp_match_header *)((uint8_t *)pin + sizeof(ofp_packet_in_header));
-    oxm_in_port_t *in_port = (oxm_in_port_t *)((uint8_t *) match + sizeof(ofp_match_header));
 
-    uint16_t match_len = htons(match->length);
-    uint16_t match_padded_len = ((match_len + 7) / 8) * 8;
+    uint32_t match_len = htons(match->length);
+    uint32_t match_offset = (uint32_t)((uint8_t *)match - (uint8_t *)opf);
+    if (match->type != htons(1U) ||
+        match_len < sizeof(ofp_match_header) + sizeof(oxm_in_port_t) ||
+        match_len > message_length - match_offset) {
+        return 255;
+    }
+    uint32_t match_padded_len = (match_len + 7U) & ~7U;
+    uint32_t in_port_offset = match_offset + sizeof(ofp_match_header);
+    if (in_port_offset + sizeof(oxm_in_port_t) > match_offset + match_len ||
+        match_offset + match_padded_len + 2U > message_length) {
+        return 255;
+    }
+    oxm_in_port_t *in_port = (oxm_in_port_t *)((uint8_t *)match + sizeof(ofp_match_header));
+    uint32_t in_port_oxm = htonl(in_port->oxm_header);
+    if ((in_port_oxm >> 16) != 0x8000U ||
+        ((in_port_oxm >> 9) & 0x7FU) != 0U ||
+        (in_port_oxm & 0x100U) != 0U ||
+        (in_port_oxm & 0xFFU) != sizeof(uint32_t)) {
+        return 255;
+    }
 
     uint8_t *raw_ethernet_frame = (uint8_t *)match + match_padded_len + 2;
     uint16_t frame_total_len = htons(pin->total_len);
+    uint32_t frame_offset = (uint32_t)(raw_ethernet_frame - (uint8_t *)opf);
+    if (frame_offset > message_length || frame_total_len < sizeof(ETHFrame) ||
+        message_length - frame_offset < sizeof(ETHFrame) || inf[index].tti >= APP_SWITCH_CAPACITY ||
+        (pin->buffer_id == OFP_NO_BUFFER && frame_total_len > message_length - frame_offset)) {
+        return 255;
+    }
 
     ETHFrame *eth = (ETHFrame *)raw_ethernet_frame;
     uint32_t rx_port = htonl(in_port->port_no);
     uint8_t current_switch_index = inf[index].tti;
+    if (rx_port >= APP_SWITCH_PORT_CAPACITY) {
+        return 255;
+    }
 
-
+    DWT_Record(DWT_METRIC_PACKET_IN_EXTRACTION, DWT_STOP(extraction_start));
 
     if (htons(eth->ETHtype) == 0x88CC) {
 
-        process_lldp_packet(index, opf, raw_ethernet_frame, rx_port);
+        process_lldp_packet(index, opf, raw_ethernet_frame, rx_port, frame_total_len);
         return 0;
     }
 
     uint8_t is_isl = 0;
-    if (rx_port < 64 && topology[current_switch_index].links[rx_port].active == 1) {
+    if (rx_port < APP_SWITCH_PORT_CAPACITY && topology[current_switch_index].links[rx_port].active == 1) {
         is_isl = 1;
     }
 
@@ -438,6 +551,7 @@ uint8_t process_packet_in(uint8_t index, ofp_header *opf)
                 memcmp(mac_table[i].mac, eth->src_add.addr, 6) == 0) {
                 mac_table[i].port_no = rx_port;
                 mac_table[i].tcp_index = current_switch_index;
+                mac_table_last_seen[i] = tim6time;
                 is_known_src = 1;
                 break;
             }
@@ -450,6 +564,7 @@ uint8_t process_packet_in(uint8_t index, ofp_header *opf)
                     mac_table[i].port_no = rx_port;
                     mac_table[i].tcp_index = current_switch_index;
                     mac_table[i].is_active = 1;
+                    mac_table_last_seen[i] = tim6time;
 
                     break;
                 }
@@ -461,15 +576,16 @@ uint8_t process_packet_in(uint8_t index, ofp_header *opf)
 
     uint32_t action_port = 0xFFFFFFFB;
     const uint8_t mac_bcast[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+    uint8_t path[APP_MAX_PATH_LENGTH];
+    uint8_t path_len = 0;
+    uint8_t target_switch_tti = 255;
+    uint32_t target_host_port = 0;
+    uint32_t routing_start = DWT_START();
 
     if (memcmp(eth->dest_add.addr, mac_bcast, 6) == 0 || (eth->dest_add.addr[0] & 0x01)) {
-
         action_port = 0xFFFFFFFB;
     }
     else {
-        uint8_t target_switch_tti = 255;
-        uint32_t target_host_port = 0;
-
         for (int i = 0; i < MAC_TABLE_SIZE; i++) {
             if (mac_table[i].is_active == 1 && memcmp(mac_table[i].mac, eth->dest_add.addr, 6) == 0) {
                 target_switch_tti = mac_table[i].tcp_index;
@@ -479,26 +595,8 @@ uint8_t process_packet_in(uint8_t index, ofp_header *opf)
         }
 
         if (target_switch_tti != 255) {
-
-            uint8_t path[MAX_PATH_LEN];
-            uint8_t path_len = find_shortest_path(current_switch_index, target_switch_tti, path);
-
+            path_len = find_shortest_path(current_switch_index, target_switch_tti, path);
             if (path_len > 0) {
-                for (int p = 0; p < path_len; p++) {
-                    uint8_t sw_tti = path[p];
-                    uint32_t out_p;
-
-                    if (path_len == 1 || p == path_len - 1) {
-                        out_p = target_host_port;
-                    } else {
-                        out_p = get_port_to_neighbor(sw_tti, path[p+1]);
-                    }
-
-                    if (out_p != 0xFFFFFFFF) {
-                        send_flow_mod(sw_tti, eth->dest_add.addr, out_p);
-                    }
-                }
-
                 if (path_len == 1) {
                     action_port = target_host_port;
                 } else {
@@ -515,15 +613,115 @@ uint8_t process_packet_in(uint8_t index, ofp_header *opf)
         }
     }
 
-    send_packet_out(current_switch_index, opf->xid, 0xFFFFFFFF, in_port->port_no, htonl(action_port), raw_ethernet_frame, frame_total_len);
+    DWT_Record(DWT_METRIC_ROUTING, DWT_STOP(routing_start));
+
+    if (path_len > 0) {
+        for (int p = 0; p < path_len; p++) {
+            uint8_t sw_tti = path[p];
+            uint32_t out_p = (path_len == 1 || p == path_len - 1)
+                ? target_host_port
+                : get_port_to_neighbor(sw_tti, path[p + 1]);
+            if (out_p != 0xFFFFFFFF) {
+                send_flow_mod(sw_tti, eth->dest_add.addr, out_p);
+            }
+        }
+    }
+
+    send_packet_out(current_switch_index, opf->xid, pin->buffer_id, in_port->port_no,
+                    htonl(action_port), raw_ethernet_frame, frame_total_len);
 
     return 0;
 }
 
+void mac_table_aging(void)
+{
+    uint32_t dwt_start = DWT_START();
+    for (int i = 0; i < MAC_TABLE_SIZE; i++) {
+        if (mac_table[i].is_active &&
+            (tim6time - mac_table_last_seen[i]) > APP_MAC_AGING_TIMEOUT_TICKS) {
+            memset(&mac_table[i], 0, sizeof(mac_table[i]));
+            mac_table_last_seen[i] = 0;
+        }
+    }
+    DWT_Record(DWT_METRIC_FDB_AGING, DWT_STOP(dwt_start));
+}
+
+void topology_aging(void)
+{
+    for (uint8_t sw = 0; sw < APP_SWITCH_CAPACITY; sw++) {
+        for (uint16_t port = 0; port < APP_SWITCH_PORT_CAPACITY; port++) {
+            link_t link = topology[sw].links[port];
+            if (!link.active || (tim6time - topology_last_seen[sw][port]) <= APP_LLDP_AGING_TIMEOUT_TICKS) {
+                continue;
+            }
+
+            if (link.neighbor_switch_idx < APP_SWITCH_CAPACITY &&
+                link.neighbor_port < APP_SWITCH_PORT_CAPACITY) {
+                link_t *reverse = &topology[link.neighbor_switch_idx].links[link.neighbor_port];
+                if (reverse->active && reverse->neighbor_switch_idx == sw &&
+                    reverse->neighbor_port == port) {
+                    memset(reverse, 0, sizeof(*reverse));
+                    topology_last_seen[link.neighbor_switch_idx][link.neighbor_port] = 0;
+                }
+            }
+            memset(&topology[sw].links[port], 0, sizeof(topology[sw].links[port]));
+            topology_last_seen[sw][port] = 0;
+        }
+    }
+}
+
+void opf_connection_closed(uint8_t index)
+{
+    if (index < APP_TCP_CONNECTION_CAPACITY) {
+        openflow_rx_length[index] = 0;
+    }
+    if (index >= MAX_SWITCHES) {
+        return;
+    }
+
+    for (int port = 0; port < APP_SWITCH_PORT_CAPACITY; port++) {
+        link_t link = topology[index].links[port];
+        if (link.active && link.neighbor_switch_idx < MAX_SWITCHES && link.neighbor_port < APP_SWITCH_PORT_CAPACITY) {
+            link_t *reverse = &topology[link.neighbor_switch_idx].links[link.neighbor_port];
+            if (reverse->active && reverse->neighbor_switch_idx == index && reverse->neighbor_port == (uint32_t)port) {
+                memset(reverse, 0, sizeof(*reverse));
+                topology_last_seen[link.neighbor_switch_idx][link.neighbor_port] = 0;
+            }
+        }
+    }
+
+    memset(&topology[index], 0, sizeof(topology[index]));
+    memset(topology_last_seen[index], 0, sizeof(topology_last_seen[index]));
+
+    for (int i = 0; i < MAC_TABLE_SIZE; i++) {
+        if (mac_table[i].is_active && mac_table[i].tcp_index == index) {
+            memset(&mac_table[i], 0, sizeof(mac_table[i]));
+            mac_table_last_seen[i] = 0;
+        }
+    }
+
+    for (int i = 0; i < APP_SWITCH_PORT_CAPACITY; i++) {
+        memset(&ports[index][i], 0, sizeof(ports[index][i]));
+    }
+}
+
 uint8_t send_packet_out(uint8_t tti, uint32_t xid, uint32_t buffer_id, uint32_t in_port, uint32_t action_port, uint8_t *raw_frame, uint16_t frame_len)
 {
+    const uint32_t fixed_length = sizeof(ETHFrame) + sizeof(IPv4header) + sizeof(TCP) +
+                                  sizeof(ofp_header) + sizeof(ofp_packet_out) +
+                                  sizeof(ofp_action_output);
+        if (tti >= APP_TCP_CONNECTION_CAPACITY ||
+                    (buffer_id == 0xFFFFFFFF &&
+                     (raw_frame == NULL || frame_len > APP_PACKET_OUT_MAX_FRAME_SIZE ||
+                      frame_len > APP_ETH_TX_BUFFER_SIZE - fixed_length))) {
+        return 255;
+    }
+
     uint8_t buf_idx = GetTxBuff();
-    if(buf_idx == 255) return 255;
+    if(buf_idx == 255) {
+        dwt_packet_dropped++;
+        return 255;
+    }
 
     uint8_t *tx_ptr = TXbuffer[buf_idx];
 
@@ -531,6 +729,7 @@ uint8_t send_packet_out(uint8_t tti, uint32_t xid, uint32_t buffer_id, uint32_t 
     uint8_t succ = getmac(tcptable[tti].remote_ip, &tx_eth->dest_add);
     if(succ == 0) return 255;
 
+    uint32_t message_start = DWT_START();
     tx_eth->ETHtype = htons(0x0800);
     tx_eth->src_add = *(MAC_Addr_t *)heth.Init.MACAddr;
 
@@ -554,7 +753,7 @@ uint8_t send_packet_out(uint8_t tti, uint32_t xid, uint32_t buffer_id, uint32_t 
     tx_tcp->seqNumber = htonl(tcptable[tti].local_seq_sent);
     tx_tcp->ackNumber = htonl(tcptable[tti].remote_seq_expected);
     tx_tcp->urgentPointer = 0;
-    tx_tcp->windowSize = htons(24000);
+    tx_tcp->windowSize = htons(APP_TCP_WINDOW_SIZE);
     tx_tcp->checksum = 0;
 
     ofp_header *ofh = (ofp_header *) (tx_ptr + sizeof(ETHFrame) + sizeof(IPv4header) + sizeof(TCP));
@@ -597,6 +796,7 @@ uint8_t send_packet_out(uint8_t tti, uint32_t xid, uint32_t buffer_id, uint32_t 
 
 
 
+    DWT_Record(DWT_METRIC_MESSAGE_GENERATION, DWT_STOP(message_start));
     Transmit(tcp_buff_lock[buf_idx].data_len, buf_idx);
     tcp_buff_lock[buf_idx].sent_time = tim6time + 2;
 
@@ -608,10 +808,40 @@ uint8_t process_port_status(ofp_header *opf, uint8_t index)
     ofp_port_status *status = (ofp_port_status *)((uint8_t *)opf + sizeof(ofp_header));
     uint32_t p_no = htonl(status->desc.port_no);
     uint8_t current_switch_tti = inf[index].tti;
-    
-    if ((status->reason == 0 || status->reason == 2) && p_no < 0xFFFFFF00)
-    {
 
+    if (current_switch_tti >= APP_SWITCH_CAPACITY || p_no >= APP_SWITCH_PORT_CAPACITY) {
+        return 0;
+    }
+
+    if (status->reason == 1) {
+        link_t link = topology[current_switch_tti].links[p_no];
+        if (link.active && link.neighbor_switch_idx < APP_SWITCH_CAPACITY &&
+            link.neighbor_port < APP_SWITCH_PORT_CAPACITY) {
+            memset(&topology[link.neighbor_switch_idx].links[link.neighbor_port], 0,
+                   sizeof(topology[link.neighbor_switch_idx].links[link.neighbor_port]));
+            topology_last_seen[link.neighbor_switch_idx][link.neighbor_port] = 0;
+        }
+        memset(&topology[current_switch_tti].links[p_no], 0,
+               sizeof(topology[current_switch_tti].links[p_no]));
+        topology_last_seen[current_switch_tti][p_no] = 0;
+        for (int port_slot = 0; port_slot < APP_SWITCH_PORT_CAPACITY; port_slot++) {
+            if (ports[current_switch_tti][port_slot].is_free &&
+                ports[current_switch_tti][port_slot].port_no == p_no) {
+                memset(&ports[current_switch_tti][port_slot], 0,
+                       sizeof(ports[current_switch_tti][port_slot]));
+            }
+        }
+        for (int i = 0; i < MAC_TABLE_SIZE; i++) {
+            if (mac_table[i].is_active && mac_table[i].tcp_index == current_switch_tti &&
+                mac_table[i].port_no == p_no) {
+                memset(&mac_table[i], 0, sizeof(mac_table[i]));
+                mac_table_last_seen[i] = 0;
+            }
+        }
+        return 0;
+    }
+
+    if ((status->reason == 0 || status->reason == 2) && p_no < 0xFFFFFF00) {
         send_lldp_packet_out(index, p_no);
     }
     return 0;
@@ -620,28 +850,51 @@ uint8_t process_port_status(ofp_header *opf, uint8_t index)
 uint8_t process_multipart(uint8_t index, ofp_header *opf)
 {
     uint16_t total_len = htons(opf->length);
-    uint16_t port_count = (total_len - 16) / sizeof(ofp_port);
-    ofp_port *port = (ofp_port *)((uint8_t *)opf + 16);
     uint8_t current_switch_tti = inf[index].tti;
+    if (current_switch_tti >= APP_SWITCH_CAPACITY || total_len < sizeof(ofp_header) + sizeof(ofp_multipart_request)) {
+        return 255;
+    }
 
+    ofp_multipart_request *multipart = (ofp_multipart_request *)((uint8_t *)opf + sizeof(ofp_header));
+    if (htons(multipart->type) != 13U) {
+        return 0;
+    }
 
+    uint16_t body_len = total_len - sizeof(ofp_header) - sizeof(ofp_multipart_request);
+    if (body_len < sizeof(ofp_port)) {
+        return 0;
+    }
 
-    for (int i = 0; i < port_count; i++) 
+    uint16_t port_count = body_len / sizeof(ofp_port);
+    if (port_count > APP_SWITCH_PORT_CAPACITY) {
+        port_count = APP_SWITCH_PORT_CAPACITY;
+    }
+
+    ofp_port *port = (ofp_port *)((uint8_t *)multipart + sizeof(ofp_multipart_request));
+    for (int i = 0; i < port_count; i++)
     {
-        for (int c = 0; c < max_ports; c++)
+        uint32_t port_number = htonl(port->port_no);
+        int slot = -1;
+        for (int c = 0; c < APP_SWITCH_PORT_CAPACITY; c++)
         {
-            if(ports[c].is_free != 1)
-            {
-                ports[c].is_free = 1;
-                memcpy(ports[c].mac, port->hw_addr, 6);
-                ports[c].port_no = htonl(port->port_no);
-                ports[c].index = current_switch_tti;
-
-                if (ports[c].port_no < 0xFFFFFF00)
-                {
-                    send_lldp_packet_out(index, ports[c].port_no);
-                }
+            if (ports[current_switch_tti][c].is_free &&
+                ports[current_switch_tti][c].port_no == port_number) {
+                slot = c;
                 break;
+            }
+            if (!ports[current_switch_tti][c].is_free && slot < 0) {
+                slot = c;
+            }
+        }
+        if (slot >= 0) {
+            opf_mac_table_entry *entry = &ports[current_switch_tti][slot];
+            entry->is_free = 1;
+            memcpy(entry->mac, port->hw_addr, 6);
+            entry->port_no = port_number;
+            entry->index = current_switch_tti;
+
+            if (entry->port_no < 0xFFFFFF00U) {
+                send_lldp_packet_out(index, entry->port_no);
             }
         }
         port++;
@@ -688,7 +941,7 @@ uint8_t Sendmultireq(uint8_t index, ofp_header *ofp)
     tcptable[tti].local_seq_sent += sizeof(ofp_header) + sizeof(ofp_multipart_request);
 
     tx_tcp->urgentPointer = 0;
-    tx_tcp->windowSize = htons(24000);
+    tx_tcp->windowSize = htons(APP_TCP_WINDOW_SIZE);
 
     ofp_header *ofh = (ofp_header *)(tx_ptr + sizeof(ETHFrame) + sizeof(IPv4header) + sizeof(TCP));
     ofh->version = 0x04;
@@ -707,19 +960,19 @@ uint8_t Sendmultireq(uint8_t index, ofp_header *ofp)
 
 
     Transmit(tcp_buff_lock[buf_idx].data_len, buf_idx);
-    HAL_Delay(10);
     tcp_buff_lock[buf_idx].sent_time = tim6time + 2; 
 
     return 0;
 }
 
-uint8_t ProcessFT_reply(ofp_header *opf, uint8_t index)
+uint8_t OPFsendreply(uint8_t index, ofp_header *ofp, uint16_t message_length)
 {
-    return 0;
-}
+    uint32_t fixed_length = sizeof(ETHFrame) + sizeof(IPv4header) + sizeof(TCP);
+    if (message_length < sizeof(ofp_header) || message_length > APP_TCP_MSS ||
+        message_length > APP_ETH_TX_BUFFER_SIZE - fixed_length) {
+        return 255;
+    }
 
-uint8_t OPFsendreply(uint8_t index, ofp_header *ofp)
-{
     uint8_t buf_idx = GetTxBuff();
     if(buf_idx == 255) return 255;
     uint8_t *tx_ptr = TXbuffer[buf_idx];
@@ -737,7 +990,7 @@ uint8_t OPFsendreply(uint8_t index, ofp_header *ofp)
     tx_ip->destination = tcptable[tti].remote_ip;
     tx_ip->Ver_IHL = 0x45;
     tx_ip->ToS = 0;
-    tx_ip->TotalLenght = htons(sizeof(IPv4header) + sizeof(TCP) + sizeof(ofp_header)) ;
+    tx_ip->TotalLenght = htons(sizeof(IPv4header) + sizeof(TCP) + message_length);
     tx_ip->Identification = htons(100);
     tx_ip->Flag_Fregmantoff = htons(0x4000); 
     tx_ip->TimeToLive = 64;
@@ -754,32 +1007,35 @@ uint8_t OPFsendreply(uint8_t index, ofp_header *ofp)
     tx_tcp->ackNumber = htonl(tcptable[tti].remote_seq_expected);
     tx_tcp->checksum = 0;
 
-    tcptable[tti].local_seq_sent += sizeof(ofp_header);
-
     tx_tcp->urgentPointer = 0;
-    tx_tcp->windowSize = htons(24000);
+    tx_tcp->windowSize = htons(APP_TCP_WINDOW_SIZE);
 
     ofp_header *ofh = (ofp_header *) (tx_ptr + sizeof(ETHFrame) + sizeof(IPv4header) + sizeof(TCP));
     ofh->version = 0x04;
     ofh->type    = 3;
-    ofh->length  = htons(8);
+    ofh->length  = htons(message_length);
     ofh->xid     = ofp->xid;
+
+    if (message_length > sizeof(ofp_header)) {
+        memcpy(ofh + 1, ofp + 1, message_length - sizeof(ofp_header));
+    }
+
+    tcptable[tti].local_seq_sent += message_length;
 
     tcp_buff_lock[buf_idx].is_locked = 1;
     tcp_buff_lock[buf_idx].seq_num = htonl(tx_tcp->seqNumber);
     tcp_buff_lock[buf_idx].conn_idx = tti;
-    tcp_buff_lock[buf_idx].data_len = sizeof(ETHFrame) + sizeof(IPv4header) + sizeof(TCP) + sizeof(ofp_header);
+    tcp_buff_lock[buf_idx].data_len = sizeof(ETHFrame) + sizeof(IPv4header) + sizeof(TCP) + message_length;
 
 
 
     Transmit(tcp_buff_lock[buf_idx].data_len, buf_idx);
-    HAL_Delay(10);
     tcp_buff_lock[buf_idx].sent_time = tim6time + 2; 
 
     return 0;
 }
 
-uint8_t sendhello(uint8_t index)
+uint8_t sendhello(uint8_t index, ofp_header *request)
 {
     uint8_t buf_idx = GetTxBuff();
     if(buf_idx == 255) return 255;
@@ -799,7 +1055,7 @@ uint8_t sendhello(uint8_t index)
     tx_ip->destination = tcptable[tti].remote_ip;
     tx_ip->Ver_IHL = 0x45;
     tx_ip->ToS = 0;
-    tx_ip->TotalLenght = htons(sizeof(IPv4header) + sizeof(TCP) + (2*sizeof(ofp_header)) + sizeof(ofp_hello_elem_versionbitmap));
+    tx_ip->TotalLenght = htons(sizeof(IPv4header) + sizeof(TCP) + sizeof(ofp_header) + sizeof(ofp_hello_elem_versionbitmap));
     tx_ip->Identification = htons(100);
     tx_ip->Flag_Fregmantoff = htons(0x4000); 
     tx_ip->TimeToLive = 64;
@@ -816,38 +1072,104 @@ uint8_t sendhello(uint8_t index)
     tx_tcp->ackNumber = htonl(tcptable[tti].remote_seq_expected);
     tx_tcp->checksum = 0;
 
-    tcptable[tti].local_seq_sent += (2*sizeof(ofp_header)) + sizeof(ofp_hello_elem_versionbitmap);
+    tcptable[tti].local_seq_sent += sizeof(ofp_header) + sizeof(ofp_hello_elem_versionbitmap);
 
     tx_tcp->urgentPointer = 0;
-    tx_tcp->windowSize = htons(24000);
+    tx_tcp->windowSize = htons(APP_TCP_WINDOW_SIZE);
 
     ofp_header *ofh = (ofp_header *) (tx_ptr + sizeof(ETHFrame) + sizeof(IPv4header) + sizeof(TCP));
     ofh->version = 0x04;
     ofh->type    = 0;
     ofh->length  = htons(16);    
-    ofh->xid     = htonl(100);
+    ofh->xid     = request->xid;
 
     ofp_hello_elem_versionbitmap *elem = (ofp_hello_elem_versionbitmap *)((uint8_t *)ofh + sizeof(ofp_header));
     elem->type   = htons(1);
     elem->length = htons(8);
     elem->bitmap = htonl(0x00000010);
 
-    ofp_header *ofpr = (ofp_header *)((uint8_t *)ofh + sizeof(ofp_header) + sizeof(ofp_hello_elem_versionbitmap));
-    ofpr->version = 0x04;
-    ofpr->type    = 5;
-    ofpr->length  = htons(8);    
-    ofpr->xid     = htonl(11);
-
     tcp_buff_lock[buf_idx].is_locked = 1;
     tcp_buff_lock[buf_idx].seq_num = htonl(tx_tcp->seqNumber);
     tcp_buff_lock[buf_idx].conn_idx = tti;
-    tcp_buff_lock[buf_idx].data_len = sizeof(ETHFrame) + sizeof(IPv4header) + sizeof(TCP) + (2 * sizeof(ofp_header)) + sizeof(ofp_hello_elem_versionbitmap);
+    tcp_buff_lock[buf_idx].data_len = sizeof(ETHFrame) + sizeof(IPv4header) + sizeof(TCP) + sizeof(ofp_header) + sizeof(ofp_hello_elem_versionbitmap);
 
 
 
     Transmit(tcp_buff_lock[buf_idx].data_len, buf_idx);
-    HAL_Delay(10);
     tcp_buff_lock[buf_idx].sent_time = tim6time + 2; 
 
+    return 0;
+}
+
+uint8_t send_features_reply(uint8_t index, ofp_header *request)
+{
+    uint8_t buffer = GetTxBuff();
+    if (buffer == 255) {
+        return 255;
+    }
+
+    uint8_t connection = inf[index].tti;
+    uint8_t *tx = TXbuffer[buffer];
+    ETHFrame *ethernet = (ETHFrame *)tx;
+    if (getmac(tcptable[connection].remote_ip, &ethernet->dest_add) == 0) {
+        return 255;
+    }
+
+    ethernet->src_add = *(MAC_Addr_t *)heth.Init.MACAddr;
+    ethernet->ETHtype = htons(0x0800);
+
+    IPv4header *ip = (IPv4header *)(tx + sizeof(ETHFrame));
+    ip->source = tempss.IPv4_add;
+    ip->destination = tcptable[connection].remote_ip;
+    ip->Ver_IHL = 0x45;
+    ip->ToS = 0;
+    ip->TotalLenght = htons(sizeof(IPv4header) + sizeof(TCP) + sizeof(ofp_header) + sizeof(ofp_switch_features));
+    ip->Identification = 0;
+    ip->Flag_Fregmantoff = htons(0x4000);
+    ip->TimeToLive = 64;
+    ip->Protocol = 6;
+    ip->HeaderChecksum = 0;
+
+    TCP *tcp = (TCP *)(tx + sizeof(ETHFrame) + sizeof(IPv4header));
+    tcp->desPort = htons(tcptable[connection].remote_port);
+    tcp->srcPort = htons(tcptable[connection].local_port);
+    tcp->doffResFlag = htons((sizeof(TCP) / 4U << 12) | TCP_FLAG_ACK | TCP_FLAG_PSH);
+    tcp->seqNumber = htonl(tcptable[connection].local_seq_sent);
+    tcp->ackNumber = htonl(tcptable[connection].remote_seq_expected);
+    tcp->urgentPointer = 0;
+    tcp->windowSize = htons(APP_TCP_WINDOW_SIZE);
+    tcp->checksum = 0;
+
+    ofp_header *reply = (ofp_header *)(tx + sizeof(ETHFrame) + sizeof(IPv4header) + sizeof(TCP));
+    reply->version = 0x04;
+    reply->type = 6;
+    reply->length = htons(sizeof(ofp_header) + sizeof(ofp_switch_features));
+    reply->xid = request->xid;
+
+    ofp_switch_features *features = (ofp_switch_features *)(reply + 1);
+    memset(features, 0, sizeof(*features));
+    features->datapath_id = ((uint64_t)heth.Init.MACAddr[0] << 40) |
+                            ((uint64_t)heth.Init.MACAddr[1] << 32) |
+                            ((uint64_t)heth.Init.MACAddr[2] << 24) |
+                            ((uint64_t)heth.Init.MACAddr[3] << 16) |
+                            ((uint64_t)heth.Init.MACAddr[4] << 8) |
+                            heth.Init.MACAddr[5];
+    uint64_t datapath_id = features->datapath_id;
+    features->datapath_id = ((uint64_t)htonl((uint32_t)datapath_id) << 32) |
+                            htonl((uint32_t)(datapath_id >> 32));
+    features->n_buffers = htonl(ETH_TX_DESC_CNT);
+    features->n_tables = 1;
+
+    uint16_t openflow_length = sizeof(ofp_header) + sizeof(ofp_switch_features);
+    uint16_t tcp_length = sizeof(TCP) + openflow_length;
+    ip->TotalLenght = htons(sizeof(IPv4header) + tcp_length);
+    tcptable[connection].local_seq_sent += openflow_length;
+
+    tcp_buff_lock[buffer].is_locked = 1;
+    tcp_buff_lock[buffer].seq_num = tcptable[connection].local_seq_sent - openflow_length;
+    tcp_buff_lock[buffer].conn_idx = connection;
+    tcp_buff_lock[buffer].data_len = sizeof(ETHFrame) + sizeof(IPv4header) + tcp_length;
+    Transmit(tcp_buff_lock[buffer].data_len, buffer);
+    tcp_buff_lock[buffer].sent_time = tim6time + 2;
     return 0;
 }

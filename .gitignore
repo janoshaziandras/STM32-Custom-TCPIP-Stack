@@ -12,6 +12,14 @@ Release/
 .settings/
 .cache/
 
+# Local test and benchmark projects
+Core/Inc/test/
+ofc-benchmark/
+oflops/
+oftest/
+openflow/
+stm32_thesis_evaluation.json
+
 # Prerequisites
 *.d
 

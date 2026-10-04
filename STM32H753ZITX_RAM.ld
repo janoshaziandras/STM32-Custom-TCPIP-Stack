@@ -138,6 +138,16 @@ SECTIONS
     _edata = .;        /* define a global symbol at data end */
   } >DTCMRAM AT> RAM_EXEC
 
+  .dtcm_bss (NOLOAD) :
+  {
+    . = ALIGN(8);
+    _sdtcm_bss = .;
+    *(.bss.dtcm)
+    *(.bss.dtcm.*)
+    . = ALIGN(4);
+    _edtcm_bss = .;
+  } >DTCMRAM
+
   /* Uninitialized data section */
   . = ALIGN(4);
   .bss :
@@ -152,7 +162,7 @@ SECTIONS
     . = ALIGN(4);
     _ebss = .;         /* define a global symbol at bss end */
     __bss_end__ = _ebss;
-  } >DTCMRAM
+  } >RAM_EXEC
 
   /* User_heap_stack section, used to check that there is enough RAM left */
   ._user_heap_stack :

@@ -35,7 +35,7 @@
 ENTRY(Reset_Handler)
 
 /* Highest address of the user mode stack */
-_estack = ORIGIN(RAM_D1) + LENGTH(RAM_D1);    /* end of RAM */
+_estack = ORIGIN(DTCMRAM) + LENGTH(DTCMRAM);    /* end of DTCM stack RAM */
 /* Generate a link error if heap and stack don't fit into RAM */
 _Min_Heap_Size = 0x200;      /* required amount of heap  */
 _Min_Stack_Size = 0x400; /* required amount of stack */
@@ -140,6 +140,16 @@ SECTIONS
     _edata = .;        /* define a global symbol at data end */
   } >RAM_D1 AT> FLASH
 
+  .dtcm_bss (NOLOAD) :
+  {
+    . = ALIGN(8);
+    _sdtcm_bss = .;
+    *(.bss.dtcm)
+    *(.bss.dtcm.*)
+    . = ALIGN(4);
+    _edtcm_bss = .;
+  } >DTCMRAM
+
   /* Uninitialized data section */
   . = ALIGN(4);
   .bss :
@@ -165,7 +175,7 @@ SECTIONS
     . = . + _Min_Heap_Size;
     . = . + _Min_Stack_Size;
     . = ALIGN(8);
-  } >RAM_D1
+  } >DTCMRAM
 
   .eth_memory (NOLOAD) :
   {
@@ -180,6 +190,9 @@ SECTIONS
     
     . = ALIGN(32);
     *(.TxBufferSection)
+
+    . = ALIGN(32);
+    *(.dwt_memory)
   } >ETH
 
   /* Remove information from the standard libraries */

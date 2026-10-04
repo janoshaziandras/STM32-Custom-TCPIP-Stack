@@ -1,30 +1,16 @@
-/*
- * headers.h
- *
- * Created on: 2026. febr. 15.
- *
- */
-
 #ifndef SRC_HEADERS_H_
 #define SRC_HEADERS_H_
 #include "stm32h7xx_hal.h"
+#include "app_config.h"
 #include <stdint.h>
-#include "string.h"
-#include "stdio.h"
 
-
-
-#define CONSOLE_BUF_SIZE 2048
-extern volatile uint16_t head;
-extern volatile uint16_t tail;
-extern char console_buffer[CONSOLE_BUF_SIZE];
 
 extern uint32_t tim6time;
 
 void writeline(const char* fmt, ...);
 void console_process(void);
-extern uint8_t RXbuffer[ETH_RX_DESC_CNT][1536] __attribute__((aligned(32))) __attribute__((section(".RxBufferSection")));
-extern uint8_t TXbuffer[ETH_TX_DESC_CNT][1536] __attribute__((aligned(32))) __attribute__((section(".TxBufferSection")));
+extern uint8_t RXbuffer[ETH_RX_DESC_CNT][APP_ETH_RX_BUFFER_SIZE] __attribute__((aligned(32))) __attribute__((section(".RxBufferSection")));
+extern uint8_t TXbuffer[ETH_TX_DESC_CNT][APP_ETH_TX_BUFFER_SIZE] __attribute__((aligned(32))) __attribute__((section(".TxBufferSection")));
 extern ETH_HandleTypeDef heth;
 extern RNG_HandleTypeDef hrng;
 extern void initarp();
@@ -33,6 +19,43 @@ extern void packetHandler(uint8_t index);
 extern void icmpHandler(uint8_t index);
 extern void TCP_retrans();
 extern void TCP_clean_table();
+extern void TCP_Init(void);
+extern void TCP_close_connection(uint8_t index);
+extern void mac_table_aging(void);
+extern void topology_aging(void);
+extern void opf_connection_closed(uint8_t index);
+extern uint16_t opf_stream_window(uint8_t connection);
+
+#define DWT_SAMPLE_CAPACITY APP_DWT_SAMPLE_CAPACITY
+
+typedef enum {
+    DWT_METRIC_PACKET_TRANSACTION,
+    DWT_METRIC_TCP_HANDLER,
+    DWT_METRIC_TCP_SYN_ACCEPT,
+    DWT_METRIC_TCP_RESET,
+    DWT_METRIC_OPENFLOW_HANDLER,
+    DWT_METRIC_ARP_LOOKUP,
+    DWT_METRIC_ARP_AGING,
+    DWT_METRIC_FDB_AGING,
+    DWT_METRIC_TX_BUFFER_SEARCH,
+    DWT_METRIC_TX_START,
+    DWT_METRIC_OPENFLOW_PARSE,
+    DWT_METRIC_PACKET_IN_EXTRACTION,
+    DWT_METRIC_ROUTING,
+    DWT_METRIC_MESSAGE_GENERATION,
+    DWT_METRIC_COUNT
+} DwtMetric;
+
+extern volatile uint32_t dwt_measurements[DWT_METRIC_COUNT][DWT_SAMPLE_CAPACITY];
+extern volatile uint16_t dwt_measurement_counts[DWT_METRIC_COUNT];
+extern volatile uint32_t dwt_measurement_dropped[DWT_METRIC_COUNT];
+extern volatile uint32_t dwt_packet_dropped;
+
+void DWT_Init(void);
+void DWT_Record(DwtMetric metric, uint32_t cycles);
+
+#define DWT_START() (DWT->CYCCNT)
+#define DWT_STOP(start_value) ((uint32_t)(DWT->CYCCNT - (start_value)))
 
 #define htons(x) __builtin_bswap16(x)
 #define htonl(x) __builtin_bswap32(x)
@@ -171,6 +194,7 @@ typedef struct
 	uint8_t    *payload_pointer;
 
 	uint8_t bufflock;
+    uint16_t frame_length;
 
 }packetinf;
 
@@ -178,7 +202,6 @@ extern packetinf inf[ETH_RX_DESC_CNT];
 
 
 typedef struct{
-
 uint8_t indx;
 uint8_t flags;
 uint16_t data_len;
@@ -197,6 +220,7 @@ typedef struct {
     uint32_t remote_seq_expected;
 
 	uint32_t last_seen_ack;
+    uint32_t last_rx_time;
 	uint8_t D_ack_counter;
 
 	uint8_t errstate;
@@ -245,15 +269,12 @@ typedef struct {
     uint32_t bitmap;    
 } ofp_hello_elem_versionbitmap;
 
-
-
 typedef struct {
-
     uint64_t datapath_id;
     uint32_t n_buffers;
-    uint8_t  n_tables;
-    uint8_t  auxiliary_id;
-    uint8_t  pad[2];
+    uint8_t n_tables;
+    uint8_t auxiliary_id;
+    uint8_t pad[2];
     uint32_t capabilities;
     uint32_t reserved;
 } ofp_switch_features;
@@ -313,11 +334,6 @@ typedef struct {
 } oxm_in_port_t;
 
 typedef struct {
-    uint32_t seconds;
-    uint32_t nanoseconds;
-} PTP_Time;
-
-typedef struct {
     uint8_t index;
     uint8_t mac[6];       
     uint32_t port_no;     
@@ -346,7 +362,7 @@ typedef struct {
 #define OFP_NO_BUFFER 0xffffffff
 
 
-#define MAC_TABLE_SIZE 128
+#define MAC_TABLE_SIZE APP_MAC_TABLE_CAPACITY
 
 typedef struct {
     uint8_t mac[6];     
@@ -377,7 +393,7 @@ typedef struct {
     uint8_t  pad[4];
 } ofp_instruction_actions;
 
-#define MAX_SWITCHES 8
+#define MAX_SWITCHES APP_SWITCH_CAPACITY
 
 typedef struct {
     uint8_t active;
@@ -386,24 +402,20 @@ typedef struct {
 } link_t;
 
 typedef struct {
-    link_t links[64];
+    link_t links[APP_SWITCH_PORT_CAPACITY];
 } switch_topology_t;
 
 
 extern switch_topology_t topology[MAX_SWITCHES];
 
-void PTP_Init(void);
-PTP_Time Get_MAC_Time(void);
-
 extern tempips tempss;
 extern const MAC_Addr_t MAC_BROADCAST;
-extern const MAC_Addr_t MAC_NULL;
 extern void arpreqvest(ipv4 ipv4add);
 extern void tcphandler(uint8_t index);
 extern uint8_t getmac(ipv4 ip, MAC_Addr_t *out_mac);
-extern void opf_handler(uint8_t index);
-extern tcpconnection tcptable[8];
-uint8_t sendhello(uint8_t index);
+extern uint8_t opf_stream_receive(uint8_t index, const uint8_t *data, uint16_t length);
+extern tcpconnection tcptable[APP_TCP_CONNECTION_CAPACITY];
+uint8_t sendhello(uint8_t index, ofp_header *request);
 static inline void GenETHHeader(ETHFrame *frame, MAC_Addr_t dest, uint16_t type)
 
 {

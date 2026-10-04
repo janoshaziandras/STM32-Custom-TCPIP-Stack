@@ -1,13 +1,19 @@
 #include "headers.h"
 #include "main.h"
 
+#include <string.h>
+
 static void SendICMPechoReply(uint8_t index)
 {
     uint8_t TXind = GetTxBuff();
-    if(TXind < ETH_RX_DESC_CNT)
+    if(TXind < ETH_TX_DESC_CNT)
     {
         IPv4header *rx_ip = inf[index].ip_pointer;
         uint16_t original_ip_len = htons(rx_ip->TotalLenght);
+        uint16_t ip_header_len = (rx_ip->Ver_IHL & 0x0FU) * 4U;
+        if (ip_header_len > original_ip_len || original_ip_len - ip_header_len < sizeof(ICMP)) {
+            return;
+        }
         uint16_t fullLen = original_ip_len + sizeof(ETHFrame);
 
 
@@ -28,12 +34,6 @@ static void SendICMPechoReply(uint8_t index)
 
         icmp->type = 0;
         icmp->checksum = 0;
-        ip->TotalLenght = htons(original_ip_len + 8);
-
-
-        fullLen += 8;
-
-
 
         Transmit( fullLen , TXind );
     }
