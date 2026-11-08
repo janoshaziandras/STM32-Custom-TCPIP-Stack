@@ -12,6 +12,7 @@ static void SendICMPechoReply(uint8_t index)
         uint16_t original_ip_len = htons(rx_ip->TotalLenght);
         uint16_t ip_header_len = (rx_ip->Ver_IHL & 0x0FU) * 4U;
         if (ip_header_len > original_ip_len || original_ip_len - ip_header_len < sizeof(ICMP)) {
+            ReleaseTxBuff(TXind);
             return;
         }
         uint16_t fullLen = original_ip_len + sizeof(ETHFrame);

@@ -103,6 +103,7 @@ static void tcphandler_impl(uint8_t index)
             tcptable[freeIdx].local_port = htons(tcp->desPort);
             tcptable[freeIdx].remote_seq_expected = htonl(tcp->seqNumber) + 1;
             tcptable[freeIdx].local_seq_sent = TCP_NextSequence() + 1U;
+            tcptable[freeIdx].local_seq_acked = tcptable[freeIdx].local_seq_sent - 1U;
             tcptable[freeIdx].last_seen_ack = htonl(tcp->seqNumber);
 
             TCP_Handshakeinf handshake;
@@ -157,7 +158,7 @@ static void tcphandler_impl(uint8_t index)
         {
             if(ack_valid && tcp_buff_lock[i].conn_idx == Tindex && tcp_buff_lock[i].is_locked == 1)
             {
-                if(SEQ_GT(recived_ack, tcp_buff_lock[i].seq_num))
+                if(SEQ_GEQ(recived_ack, tcp_buff_lock[i].seq_end))
                 {
                     tcp_buff_lock[i].is_locked = 0;
                     tcp_buff_lock[i].retry_count = 0;
@@ -321,7 +322,7 @@ void TCP_retrans()
                 continue;
             }
 
-			if(SEQ_GEQ(tcp_buff_lock[i].seq_num, tcptable[tcp_buff_lock[i].conn_idx].local_seq_acked) && SEQ_GT(tim6time, tcp_buff_lock[i].sent_time))
+            if(SEQ_GT(tcp_buff_lock[i].seq_end, tcptable[tcp_buff_lock[i].conn_idx].local_seq_acked) && SEQ_GT(tim6time, tcp_buff_lock[i].sent_time))
 			{
                 if(tcp_buff_lock[i].retry_count < APP_TCP_MAX_RETRIES)
 				{
@@ -386,7 +387,7 @@ static uint8_t TCP_Handshake( TCP_Handshakeinf HSinf)
     uint8_t succ = getmac(tcptable[HSinf.indx].remote_ip, &tx_eth->dest_add);
     if(succ == 0)
     {
-
+        ReleaseTxBuff(buf_idx);
         return 255;
     }
 

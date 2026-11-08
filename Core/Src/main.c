@@ -81,6 +81,7 @@ volatile uint32_t dwt_measurements[DWT_METRIC_COUNT][DWT_SAMPLE_CAPACITY] APP_DW
 volatile uint16_t dwt_measurement_counts[DWT_METRIC_COUNT] APP_DWT_BSS;
 volatile uint32_t dwt_measurement_dropped[DWT_METRIC_COUNT] APP_DWT_BSS;
 volatile uint32_t dwt_packet_dropped APP_DWT_BSS;
+volatile uint32_t dwt_measurement_enabled APP_DTCM_BSS;
 _Static_assert(DWT_METRIC_COUNT == APP_DWT_CHANNELS, "DWT channel count mismatch");
 
 
@@ -448,7 +449,7 @@ static void MX_USART3_UART_Init(void)
   }
   /* USER CODE BEGIN USART3_Init 2 */
 
-  /* USER CODE END USART3_Init 2 */06.10. - 09
+  /* USER CODE END USART3_Init 2 */
 
 }
 
@@ -483,7 +484,7 @@ static void MX_GPIO_Init(void)
   /* USER CODE END MX_GPIO_Init_1 */
 
   /* GPIO Ports Clock Enable */
-  __HAL_RCC_GPIOC_CLK_ENABLE();06.10. - 09
+  __HAL_RCC_GPIOC_CLK_ENABLE();
   __HAL_RCC_GPIOA_CLK_ENABLE();
   __HAL_RCC_GPIOB_CLK_ENABLE();
   __HAL_RCC_GPIOD_CLK_ENABLE();
@@ -497,6 +498,7 @@ static void MX_GPIO_Init(void)
 /* USER CODE BEGIN 4 */
 void DWT_Init(void)
 {
+  dwt_measurement_enabled = 1U;
   for (unsigned int metric = 0; metric < DWT_METRIC_COUNT; metric++) {
     dwt_measurement_counts[metric] = 0;
     dwt_measurement_dropped[metric] = 0;
@@ -510,7 +512,7 @@ void DWT_Init(void)
   DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
 }
 
-void DWT_Record(DwtMetric metric, uint32_t cycles)
+void DWT_RecordSample(DwtMetric metric, uint32_t cycles)
 {
   if ((unsigned int)metric >= DWT_METRIC_COUNT) {
     return;
@@ -604,7 +606,20 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 }
 
 bufferinf tcp_buff_lock[ETH_TX_DESC_CNT] APP_DTCM_BSS;
+volatile uint32_t tx_buffer_exhausted_count APP_DTCM_BSS;
+volatile uint32_t tx_hal_failure_count APP_DTCM_BSS;
+static uint8_t tx_buffer_reserved[ETH_TX_DESC_CNT] APP_DTCM_BSS;
 static int8_t NextBuff = 0;
+
+static uint8_t TxBufferInUse(uint8_t index)
+{
+  for (int descriptor = 0; descriptor < ETH_TX_DESC_CNT; descriptor++) {
+    if (heth.TxDescList.PacketAddress[descriptor] == (uint32_t *)TXbuffer[index]) {
+      return 1;
+    }
+  }
+  return 0;
+}
 
 static uint8_t GetTxBuff_impl(void)
 {
@@ -612,9 +627,11 @@ static uint8_t GetTxBuff_impl(void)
 
     while(1)
     {
-        if (((DMATxDscrTab[NextBuff].DESC3 & 0x80000000) == 0) && (tcp_buff_lock[NextBuff].is_locked == 0))
+        if (!tx_buffer_reserved[NextBuff] && !tcp_buff_lock[NextBuff].is_locked &&
+          !TxBufferInUse(NextBuff))
         {
             uint8_t idxr = NextBuff;
+          tx_buffer_reserved[idxr] = 1;
             NextBuff = (NextBuff + 1) % ETH_TX_DESC_CNT;
             return idxr;
         }
@@ -623,6 +640,7 @@ static uint8_t GetTxBuff_impl(void)
 
         if (NextBuff == Sindex)
         {
+          __atomic_fetch_add(&tx_buffer_exhausted_count, 1U, __ATOMIC_RELAXED);
             return 255;
         }
     }
@@ -631,15 +649,52 @@ static uint8_t GetTxBuff_impl(void)
 uint8_t GetTxBuff(void)
 {
   uint32_t dwt_start = DWT_START();
+  uint32_t primask = __get_PRIMASK();
+  __disable_irq();
   uint8_t index = GetTxBuff_impl();
+  __set_PRIMASK(primask);
   DWT_Record(DWT_METRIC_TX_BUFFER_SEARCH, DWT_STOP(dwt_start));
   return index;
+}
+
+void ReleaseTxBuff(uint8_t index)
+{
+    if (index >= ETH_TX_DESC_CNT) {
+        return;
+    }
+    uint32_t primask = __get_PRIMASK();
+    __disable_irq();
+    tx_buffer_reserved[index] = 0;
+    __set_PRIMASK(primask);
 }
 
 void Transmit(uint16_t len, uint8_t TXBuffIndex)
 {
   uint32_t dwt_start = DWT_START();
     static ETH_BufferTypeDef tx_buffer;
+    if (TXBuffIndex >= ETH_TX_DESC_CNT) {
+      return;
+    }
+    uint32_t primask = __get_PRIMASK();
+    __disable_irq();
+
+    if (tx_buffer_reserved[TXBuffIndex] && tcp_buff_lock[TXBuffIndex].is_locked) {
+      IPv4header *ip = (IPv4header *)&TXbuffer[TXBuffIndex][sizeof(ETHFrame)];
+      uint16_t ip_header_len = (ip->Ver_IHL & 0x0FU) * 4U;
+      TCP *tcp = (TCP *)((uint8_t *)ip + ip_header_len);
+      uint16_t tcp_header_len = ((htons(tcp->doffResFlag) >> 12) & 0x0FU) * 4U;
+      uint16_t payload_len = htons(ip->TotalLenght) - ip_header_len - tcp_header_len;
+      tcp_buff_lock[TXBuffIndex].seq_num = htonl(tcp->seqNumber);
+      tcp_buff_lock[TXBuffIndex].seq_end = tcp_buff_lock[TXBuffIndex].seq_num + payload_len +
+          GET_TCP_FLAG(tcp->doffResFlag, TCP_FLAG_SYN) + GET_TCP_FLAG(tcp->doffResFlag, TCP_FLAG_FIN);
+    }
+
+    if (TxBufferInUse(TXBuffIndex)) {
+      tx_buffer_reserved[TXBuffIndex] = 0;
+      __set_PRIMASK(primask);
+      DWT_Record(DWT_METRIC_TX_START, DWT_STOP(dwt_start));
+      return;
+    }
 
     tx_buffer.buffer = TXbuffer[TXBuffIndex];
     tx_buffer.len = len;
@@ -650,9 +705,10 @@ void Transmit(uint16_t len, uint8_t TXBuffIndex)
     TxConfig.pData = TXbuffer[TXBuffIndex];
 
     if (HAL_ETH_Transmit_IT(&heth, &TxConfig) != HAL_OK) {
-      tcp_buff_lock[TXBuffIndex].is_locked = 0;
-      tcp_buff_lock[TXBuffIndex].retry_count = 0;
+      __atomic_fetch_add(&tx_hal_failure_count, 1U, __ATOMIC_RELAXED);
     }
+    tx_buffer_reserved[TXBuffIndex] = 0;
+    __set_PRIMASK(primask);
   DWT_Record(DWT_METRIC_TX_START, DWT_STOP(dwt_start));
 }
 

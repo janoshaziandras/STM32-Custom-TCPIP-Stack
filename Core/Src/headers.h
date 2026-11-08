@@ -50,12 +50,15 @@ extern volatile uint32_t dwt_measurements[DWT_METRIC_COUNT][DWT_SAMPLE_CAPACITY]
 extern volatile uint16_t dwt_measurement_counts[DWT_METRIC_COUNT];
 extern volatile uint32_t dwt_measurement_dropped[DWT_METRIC_COUNT];
 extern volatile uint32_t dwt_packet_dropped;
+extern volatile uint32_t dwt_measurement_enabled;
 
 void DWT_Init(void);
-void DWT_Record(DwtMetric metric, uint32_t cycles);
+void DWT_RecordSample(DwtMetric metric, uint32_t cycles);
 
-#define DWT_START() (DWT->CYCCNT)
+#define DWT_START() (dwt_measurement_enabled ? DWT->CYCCNT : 0U)
 #define DWT_STOP(start_value) ((uint32_t)(DWT->CYCCNT - (start_value)))
+#define DWT_Record(metric, cycles) do { if (dwt_measurement_enabled) DWT_RecordSample((metric), (cycles)); } while (0)
+#define DWT_PacketDropped() do { if (dwt_measurement_enabled) dwt_packet_dropped++; } while (0)
 
 #define htons(x) __builtin_bswap16(x)
 #define htonl(x) __builtin_bswap32(x)
@@ -232,6 +235,7 @@ typedef struct {
 typedef struct
 {
 	uint32_t seq_num;
+    uint32_t seq_end;
 	uint8_t is_locked;
 	uint8_t conn_idx;
 	uint32_t sent_time;

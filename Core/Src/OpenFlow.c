@@ -128,7 +128,7 @@ uint8_t opf_stream_receive(uint8_t index, const uint8_t *data, uint16_t length)
     }
     if (openflow_rx_length[connection] > APP_OPENFLOW_RX_BUFFER_SIZE ||
         length > APP_OPENFLOW_RX_BUFFER_SIZE - openflow_rx_length[connection]) {
-        dwt_packet_dropped++;
+        DWT_PacketDropped();
         return 0;
     }
 
@@ -178,7 +178,9 @@ static void opf_dispatch_message(uint8_t index, uint8_t *message, uint16_t messa
     switch (opf->type)
     {
     case 0:
-        sendhello(index, opf);
+        if (sendhello(index, opf) == 0) {
+            Sendmultireq(index, opf);
+        }
         break;
     case 2:
         OPFsendreply(index, opf, message_length);
@@ -278,7 +280,10 @@ uint8_t send_lldp_packet_out(uint8_t index, uint32_t src_port)
 
     ETHFrame *tx_eth = (ETHFrame *)tx_ptr;
     MAC_Addr_t switch_mac;
-    if(getmac(tcptable[tti].remote_ip, &switch_mac) == 0) return 255;
+    if(getmac(tcptable[tti].remote_ip, &switch_mac) == 0) {
+        ReleaseTxBuff(buf_idx);
+        return 255;
+    }
 
     tx_eth->dest_add = switch_mac;
     tx_eth->src_add  = *(MAC_Addr_t *)heth.Init.MACAddr;
@@ -383,7 +388,7 @@ uint8_t send_flow_mod(uint8_t tti, uint8_t *dest_mac, uint32_t out_port)
     }
     uint8_t buf_idx = GetTxBuff();
     if(buf_idx == 255) {
-        dwt_packet_dropped++;
+        DWT_PacketDropped();
         return 255;
     }
 
@@ -391,7 +396,7 @@ uint8_t send_flow_mod(uint8_t tti, uint8_t *dest_mac, uint32_t out_port)
 
     ETHFrame *tx_eth = (ETHFrame *)tx_ptr;
     uint8_t succ = getmac(tcptable[tti].remote_ip, &tx_eth->dest_add);
-    if(succ == 0) return 255; 
+    if(succ == 0) { ReleaseTxBuff(buf_idx); return 255; }
 
     uint32_t message_start = DWT_START();
     tx_eth->ETHtype = htons(0x0800);
@@ -426,11 +431,14 @@ uint8_t send_flow_mod(uint8_t tti, uint8_t *dest_mac, uint32_t out_port)
     ofp_flow_mod *fm = (ofp_flow_mod *)(ofp_ptr + sizeof(ofp_header));
     ofp_match_header *match = (ofp_match_header *)(ofp_ptr + sizeof(ofp_header) + sizeof(ofp_flow_mod));
     uint8_t *oxm = (uint8_t *)(match + 1);
-    uint8_t *instruction_ptr = (uint8_t *)match + 12U;
+    uint16_t match_len = sizeof(ofp_match_header) + 4U + sizeof(MAC_Addr_t);
+    uint16_t padded_match_len = (match_len + 7U) & ~7U;
+    uint8_t *instruction_ptr = (uint8_t *)match + padded_match_len;
     ofp_instruction_actions *inst = (ofp_instruction_actions *)instruction_ptr;
-    ofp_action_output *act_out = (ofp_action_output *)((uint8_t *)inst + 8);
+    ofp_action_output *act_out = (ofp_action_output *)((uint8_t *)inst + sizeof(ofp_instruction_actions));
 
-    uint16_t ofp_total_len = 84;
+    uint16_t ofp_total_len = sizeof(ofp_header) + sizeof(ofp_flow_mod) + padded_match_len +
+                             sizeof(ofp_instruction_actions) + sizeof(ofp_action_output);
 
     ofh->version = 0x04;
     ofh->type    = 14;
@@ -447,8 +455,9 @@ uint8_t send_flow_mod(uint8_t tti, uint8_t *dest_mac, uint32_t out_port)
     fm->out_port     = 0xFFFFFFFF;
     fm->out_group    = 0xFFFFFFFF;
 
+    memset(match, 0, padded_match_len);
     match->type   = htons(1);
-    match->length = htons(10);
+    match->length = htons(match_len);
     
     oxm[0] = 0x80; oxm[1] = 0x00;
     oxm[2] = 0x06;
@@ -719,7 +728,7 @@ uint8_t send_packet_out(uint8_t tti, uint32_t xid, uint32_t buffer_id, uint32_t 
 
     uint8_t buf_idx = GetTxBuff();
     if(buf_idx == 255) {
-        dwt_packet_dropped++;
+        DWT_PacketDropped();
         return 255;
     }
 
@@ -727,7 +736,7 @@ uint8_t send_packet_out(uint8_t tti, uint32_t xid, uint32_t buffer_id, uint32_t 
 
     ETHFrame *tx_eth = (ETHFrame *)tx_ptr;
     uint8_t succ = getmac(tcptable[tti].remote_ip, &tx_eth->dest_add);
-    if(succ == 0) return 255;
+    if(succ == 0) { ReleaseTxBuff(buf_idx); return 255; }
 
     uint32_t message_start = DWT_START();
     tx_eth->ETHtype = htons(0x0800);
@@ -911,7 +920,7 @@ uint8_t Sendmultireq(uint8_t index, ofp_header *ofp)
 
     ETHFrame *tx_eth = (ETHFrame *)tx_ptr;
     uint8_t succ = getmac(tcptable[tti].remote_ip, &tx_eth->dest_add);
-    if(succ == 0) return 255; 
+    if(succ == 0) { ReleaseTxBuff(buf_idx); return 255; }
 
     tx_eth->ETHtype = htons(0x0800);
     tx_eth->src_add = *(MAC_Addr_t *)heth.Init.MACAddr;
@@ -950,6 +959,7 @@ uint8_t Sendmultireq(uint8_t index, ofp_header *ofp)
     ofh->xid     = ofp->xid;
 
     ofp_multipart_request *ofpmr = (ofp_multipart_request *)(ofh + 1); 
+    memset(ofpmr, 0, sizeof(*ofpmr));
     ofpmr->type  = htons(13); 
     ofpmr->flags = 0;
 
@@ -980,7 +990,7 @@ uint8_t OPFsendreply(uint8_t index, ofp_header *ofp, uint16_t message_length)
 
     ETHFrame *tx_eth = (ETHFrame *)tx_ptr;
     uint8_t succ = getmac(tcptable[tti].remote_ip, &tx_eth->dest_add);
-    if(succ == 0) return 255; 
+    if(succ == 0) { ReleaseTxBuff(buf_idx); return 255; }
 
     tx_eth->ETHtype = htons(0x0800);
     tx_eth->src_add = *(MAC_Addr_t *)heth.Init.MACAddr;
@@ -1045,7 +1055,7 @@ uint8_t sendhello(uint8_t index, ofp_header *request)
 
     ETHFrame *tx_eth = (ETHFrame *)tx_ptr;
     uint8_t succ = getmac(tcptable[tti].remote_ip, &tx_eth->dest_add);
-    if(succ == 0) return 255; 
+    if(succ == 0) { ReleaseTxBuff(buf_idx); return 255; }
 
     tx_eth->ETHtype = htons(0x0800);
     tx_eth->src_add = *(MAC_Addr_t *)heth.Init.MACAddr;
@@ -1112,6 +1122,7 @@ uint8_t send_features_reply(uint8_t index, ofp_header *request)
     uint8_t *tx = TXbuffer[buffer];
     ETHFrame *ethernet = (ETHFrame *)tx;
     if (getmac(tcptable[connection].remote_ip, &ethernet->dest_add) == 0) {
+        ReleaseTxBuff(buffer);
         return 255;
     }
 

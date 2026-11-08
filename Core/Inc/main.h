@@ -44,6 +44,7 @@ extern ETH_TxPacketConfig TxConfig;
 extern uint8_t TXbuffer[ETH_TX_DESC_CNT][APP_ETH_TX_BUFFER_SIZE];
 extern ETH_DMADescTypeDef DMATxDscrTab[ETH_TX_DESC_CNT];
 extern uint8_t GetTxBuff();
+extern void ReleaseTxBuff(uint8_t index);
 extern void Transmit(uint16_t len, uint8_t TXBuffIndex);
 
 
